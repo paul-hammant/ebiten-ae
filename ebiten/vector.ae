@@ -1,0 +1,414 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ae/ebiten/vector.ae — the vector package: stroke/fill primitives and a
+// scanline path rasterizer over core images (replaces vector's triangle
+// tessellation; no GPU here). Non-antialiased v1 (Ebiten's antialias flag is
+// accepted conceptually but ignored).
+//
+// Path model: a path is a list of subpath polylines (cubics/quads flattened
+// at build time, 16 segments each — the AeVG rasterizer's approach). Fill is
+// nonzero-winding by default, even-odd on request; sampling at pixel centers.
+
+exports (
+    fill_rect, stroke_rect, fill_circle, stroke_circle, stroke_line,
+    path_new, path_free, path_move_to, path_line_to, path_quad_to,
+    path_cubic_to, path_arc, path_close,
+    fill_path, FILL_RULE_NON_ZERO, FILL_RULE_EVEN_ODD
+)
+
+import ebiten.core
+import std.math
+import std.mem
+
+extern malloc(size: int) -> ptr
+extern free(p: ptr)
+extern lrint(x: float) -> long
+
+const FILL_RULE_NON_ZERO: int = 0
+const FILL_RULE_EVEN_ODD: int = 1
+
+const CURVE_STEPS: int = 16
+const MAX_SPANS: int = 256
+
+round_i(v: float) -> int { return lrint(v) }
+floor_i(v: float) -> int { return lrint(math.floor(v)) }
+
+// ─── simple primitives ───────────────────────────────────────────────────────
+
+// FillRect (float edges rounded to pixels, as the non-AA GPU path effectively
+// does for axis-aligned rects).
+fill_rect(dst: ptr, x: float, y: float, w: float, h: float,
+          r: int, g: int, b: int, a: int) {
+    x0 = round_i(x)
+    y0 = round_i(y)
+    x1 = round_i(x + w)
+    y1 = round_i(y + h)
+    core.image_fill_rect(dst, x0, y0, x1 - x0, y1 - y0, r, g, b, a)
+}
+
+stroke_rect(dst: ptr, x: float, y: float, w: float, h: float,
+            stroke_width: float, r: int, g: int, b: int, a: int) {
+    sw = stroke_width
+    hw = sw / 2.0
+    fill_rect(dst, x - hw, y - hw, w + sw, sw, r, g, b, a)
+    fill_rect(dst, x - hw, y + h - hw, w + sw, sw, r, g, b, a)
+    fill_rect(dst, x - hw, y + sw - hw, sw, h - sw, r, g, b, a)
+    fill_rect(dst, x + w - hw, y + sw - hw, sw, h - sw, r, g, b, a)
+}
+
+// FillCircle: per-scanline span from the circle equation.
+fill_circle(dst: ptr, cx: float, cy: float, radius: float,
+            r: int, g: int, b: int, a: int) {
+    if radius <= 0.0 { return }
+    y0 = floor_i(cy - radius)
+    y1 = floor_i(math.ceil(cy + radius))
+    yy = y0
+    while yy <= y1 {
+        dy = yy * 1.0 + 0.5 - cy
+        d2 = radius * radius - dy * dy
+        if d2 > 0.0 {
+            half = math.sqrt(d2)
+            xs = round_i(cx - half)
+            xe = round_i(cx + half)
+            core.image_fill_rect(dst, xs, yy, xe - xs, 1, r, g, b, a)
+        }
+        yy = yy + 1
+    }
+}
+
+// StrokeCircle: ring test per scanline (outer span minus inner span).
+stroke_circle(dst: ptr, cx: float, cy: float, radius: float,
+              stroke_width: float, r: int, g: int, b: int, a: int) {
+    ro = radius + stroke_width / 2.0
+    ri = radius - stroke_width / 2.0
+    if ri < 0.0 { ri = 0.0 }
+    y0 = floor_i(cy - ro)
+    y1 = floor_i(math.ceil(cy + ro))
+    yy = y0
+    while yy <= y1 {
+        dy = yy * 1.0 + 0.5 - cy
+        o2 = ro * ro - dy * dy
+        if o2 > 0.0 {
+            oh = math.sqrt(o2)
+            i2 = ri * ri - dy * dy
+            if i2 > 0.0 {
+                ih = math.sqrt(i2)
+                xs = round_i(cx - oh)
+                xe = round_i(cx - ih)
+                core.image_fill_rect(dst, xs, yy, xe - xs, 1, r, g, b, a)
+                xs = round_i(cx + ih)
+                xe = round_i(cx + oh)
+                core.image_fill_rect(dst, xs, yy, xe - xs, 1, r, g, b, a)
+            } else {
+                xs = round_i(cx - oh)
+                xe = round_i(cx + oh)
+                core.image_fill_rect(dst, xs, yy, xe - xs, 1, r, g, b, a)
+            }
+        }
+        yy = yy + 1
+    }
+}
+
+// StrokeLine: the line's oriented quad, filled via the path rasterizer.
+stroke_line(dst: ptr, x0: float, y0: float, x1: float, y1: float,
+            stroke_width: float, r: int, g: int, b: int, a: int) {
+    dx = x1 - x0
+    dy = y1 - y0
+    len = math.sqrt(dx * dx + dy * dy)
+    if len <= 0.0 { return }
+    nx = (0.0 - dy) / len * stroke_width / 2.0
+    ny = dx / len * stroke_width / 2.0
+    p = path_new()
+    path_move_to(p, x0 + nx, y0 + ny)
+    path_line_to(p, x1 + nx, y1 + ny)
+    path_line_to(p, x1 - nx, y1 - ny)
+    path_line_to(p, x0 - nx, y0 - ny)
+    path_close(p)
+    fill_path(dst, p, r, g, b, a, FILL_RULE_NON_ZERO)
+    path_free(p)
+}
+
+// ─── Path ────────────────────────────────────────────────────────────────────
+// Flat storage: pts = float64 pairs; subpath breaks marked in `brk` (1 at the
+// index that STARTS a new subpath). Curves are flattened as they are added.
+
+struct Path {
+    pts: ptr        // 2 float64 per point
+    brk: ptr        // 1 byte per point
+    n: int
+    cap: int
+    sx: float       // current subpath start (for close)
+    sy: float
+    cx: float       // current point
+    cy: float
+    has_current: int
+}
+
+path_new() -> ptr {
+    p = malloc(80) as *Path
+    p.cap = 64
+    p.pts = malloc(p.cap * 16)
+    p.brk = malloc(p.cap)
+    p.n = 0
+    p.sx = 0.0
+    p.sy = 0.0
+    p.cx = 0.0
+    p.cy = 0.0
+    p.has_current = 0
+    return p as ptr
+}
+
+path_free(pp: ptr) {
+    p = pp as *Path
+    free(p.pts)
+    free(p.brk)
+    free(pp)
+}
+
+path_grow(p: *Path) {
+    if p.n < p.cap { return }
+    ncap = p.cap * 2
+    npts = malloc(ncap * 16)
+    nbrk = malloc(ncap)
+    i = 0
+    while i < p.n {
+        mem.set_float64(npts, i * 16, mem.get_float64(p.pts, i * 16))
+        mem.set_float64(npts, i * 16 + 8, mem.get_float64(p.pts, i * 16 + 8))
+        mem.set_byte(nbrk, i, mem.get_byte(p.brk, i))
+        i = i + 1
+    }
+    free(p.pts)
+    free(p.brk)
+    p.pts = npts
+    p.brk = nbrk
+    p.cap = ncap
+}
+
+path_push(p: *Path, x: float, y: float, is_start: int) {
+    path_grow(p)
+    mem.set_float64(p.pts, p.n * 16, x)
+    mem.set_float64(p.pts, p.n * 16 + 8, y)
+    mem.set_byte(p.brk, p.n, is_start)
+    p.n = p.n + 1
+    p.cx = x
+    p.cy = y
+}
+
+path_move_to(pp: ptr, x: float, y: float) {
+    p = pp as *Path
+    path_push(p, x, y, 1)
+    p.sx = x
+    p.sy = y
+    p.has_current = 1
+}
+
+path_line_to(pp: ptr, x: float, y: float) {
+    p = pp as *Path
+    if p.has_current == 0 {
+        path_move_to(pp, x, y)
+        return
+    }
+    path_push(p, x, y, 0)
+}
+
+path_quad_to(pp: ptr, cx1: float, cy1: float, x: float, y: float) {
+    p = pp as *Path
+    if p.has_current == 0 {
+        path_move_to(pp, x, y)
+        return
+    }
+    x0 = p.cx
+    y0 = p.cy
+    i = 1
+    while i <= CURVE_STEPS {
+        t = i * 1.0 / (CURVE_STEPS * 1.0)
+        mt = 1.0 - t
+        bx = mt * mt * x0 + 2.0 * mt * t * cx1 + t * t * x
+        by = mt * mt * y0 + 2.0 * mt * t * cy1 + t * t * y
+        path_push(p, bx, by, 0)
+        i = i + 1
+    }
+}
+
+path_cubic_to(pp: ptr, cx1: float, cy1: float, cx2: float, cy2: float,
+              x: float, y: float) {
+    p = pp as *Path
+    if p.has_current == 0 {
+        path_move_to(pp, x, y)
+        return
+    }
+    x0 = p.cx
+    y0 = p.cy
+    i = 1
+    while i <= CURVE_STEPS {
+        t = i * 1.0 / (CURVE_STEPS * 1.0)
+        mt = 1.0 - t
+        bx = mt * mt * mt * x0 + 3.0 * mt * mt * t * cx1
+        bx = bx + 3.0 * mt * t * t * cx2 + t * t * t * x
+        by = mt * mt * mt * y0 + 3.0 * mt * mt * t * cy1
+        by = by + 3.0 * mt * t * t * cy2 + t * t * t * y
+        path_push(p, bx, by, 0)
+        i = i + 1
+    }
+}
+
+// Arc around (cx, cy), angles in radians, sweeping start→end (clockwise in
+// screen coords when end > start).
+path_arc(pp: ptr, cx: float, cy: float, radius: float,
+         start_angle: float, end_angle: float) {
+    p = pp as *Path
+    steps = 32
+    i = 0
+    while i <= steps {
+        t = start_angle + (end_angle - start_angle) * (i * 1.0) / (steps * 1.0)
+        x = cx + radius * math.cos(t)
+        y = cy + radius * math.sin(t)
+        if i == 0 && p.has_current == 0 {
+            path_move_to(pp, x, y)
+        } else {
+            if i == 0 {
+                path_push(p, x, y, 0)
+            } else {
+                path_push(p, x, y, 0)
+            }
+        }
+        i = i + 1
+    }
+}
+
+path_close(pp: ptr) {
+    p = pp as *Path
+    if p.has_current == 1 { path_push(p, p.sx, p.sy, 0) }
+}
+
+// ─── scanline fill ───────────────────────────────────────────────────────────
+
+// Fill the path into dst with the given straight RGBA color and fill rule.
+// Nonzero or even-odd winding; samples at pixel centers; subpaths auto-close.
+fill_path(dst: ptr, pp: ptr, r: int, g: int, b: int, a: int, rule: int) {
+    p = pp as *Path
+    if p.n < 3 { return }
+
+    // bounds
+    miny = mem.get_float64(p.pts, 8)
+    maxy = miny
+    i = 0
+    while i < p.n {
+        y = mem.get_float64(p.pts, i * 16 + 8)
+        if y < miny { miny = y }
+        if y > maxy { maxy = y }
+        i = i + 1
+    }
+    y0 = floor_i(miny)
+    y1 = floor_i(math.ceil(maxy))
+
+    xs = malloc(MAX_SPANS * 8)
+    ws = malloc(MAX_SPANS * 4)
+
+    yy = y0
+    while yy <= y1 {
+        sy = yy * 1.0 + 0.5
+        nx = 0
+        // walk edges: each consecutive point pair within a subpath, plus the
+        // implicit closing edge from the subpath's last point to its start.
+        sub_start = 0
+        i = 0
+        while i < p.n {
+            is_last = 0
+            if i == p.n - 1 { is_last = 1 }
+            nxt = i + 1
+            edge_to = nxt
+            close_edge = 0
+            if is_last == 1 {
+                close_edge = 1
+            } else {
+                if mem.get_byte(p.brk, nxt) == 1 { close_edge = 1 }
+            }
+            ax = mem.get_float64(p.pts, i * 16)
+            ay = mem.get_float64(p.pts, i * 16 + 8)
+            bx = 0.0
+            by = 0.0
+            if close_edge == 1 {
+                bx = mem.get_float64(p.pts, sub_start * 16)
+                by = mem.get_float64(p.pts, sub_start * 16 + 8)
+            } else {
+                bx = mem.get_float64(p.pts, edge_to * 16)
+                by = mem.get_float64(p.pts, edge_to * 16 + 8)
+            }
+            // crossing?
+            dirn = 0
+            if ay <= sy && by > sy { dirn = 1 }
+            if by <= sy && ay > sy { dirn = 0 - 1 }
+            if dirn != 0 && nx < MAX_SPANS {
+                t = (sy - ay) / (by - ay)
+                cxx = ax + (bx - ax) * t
+                mem.set_float64(xs, nx * 8, cxx)
+                mem.set_int(ws, nx * 4, dirn)
+                nx = nx + 1
+            }
+            if close_edge == 1 { sub_start = nxt }
+            i = i + 1
+        }
+        // insertion sort crossings by x (winding tags follow)
+        si = 1
+        while si < nx {
+            kx = mem.get_float64(xs, si * 8)
+            kw = mem.get_int(ws, si * 4)
+            sj = si - 1
+            moving = 1
+            while moving == 1 {
+                if sj >= 0 {
+                    if mem.get_float64(xs, sj * 8) > kx {
+                        mem.set_float64(xs, (sj + 1) * 8, mem.get_float64(xs, sj * 8))
+                        mem.set_int(ws, (sj + 1) * 4, mem.get_int(ws, sj * 4))
+                        sj = sj - 1
+                    } else {
+                        moving = 0
+                    }
+                } else {
+                    moving = 0
+                }
+            }
+            mem.set_float64(xs, (sj + 1) * 8, kx)
+            mem.set_int(ws, (sj + 1) * 4, kw)
+            si = si + 1
+        }
+        // emit spans: between consecutive crossings, filled while the
+        // accumulated winding (nonzero) / crossing parity (even-odd) says in.
+        wind = 0
+        cnt = 0
+        k = 0
+        while k + 1 < nx {
+            wind = wind + mem.get_int(ws, k * 4)
+            cnt = cnt + 1
+            filled = 0
+            if rule == FILL_RULE_EVEN_ODD {
+                if cnt % 2 == 1 { filled = 1 }
+            } else {
+                if wind != 0 { filled = 1 }
+            }
+            if filled == 1 {
+                x0 = round_i(mem.get_float64(xs, k * 8))
+                x1 = round_i(mem.get_float64(xs, (k + 1) * 8))
+                core.image_fill_rect(dst, x0, yy, x1 - x0, 1, r, g, b, a)
+            }
+            k = k + 1
+        }
+        yy = yy + 1
+    }
+    free(xs)
+    free(ws)
+}

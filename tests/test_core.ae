@@ -1,0 +1,280 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_core.ae — headless parity tests for ae/ebiten/core.ae
+// (GeoM vs geom.go, blitter vs DrawImage semantics). Run from the repo root:
+//   ae run --extra ebiten/aether_ebiten_blit.c tests/test_core.ae
+
+import ebiten.core
+import std.math
+import std.mem
+
+extern println(s: string)
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+
+const PI: float = 3.14159265358979
+
+assert_f(name: string, got: float, want: float) {
+    d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d > 0.000001 {
+        println("FAIL ${name}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+assert_i(name: string, got: int, want: int) {
+    if got != want {
+        println("FAIL ${name}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+// |got - want| <= 1 for rounding tolerance on blended bytes
+assert_b(name: string, got: int, want: int) {
+    d = got - want
+    if d < 0 { d = 0 - d }
+    if d > 1 {
+        println("FAIL ${name}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+main() {
+    // ── GeoM ──
+    g = core.geom_new()
+    assert_f("identity x", core.geom_apply_x(g, 3.0, 4.0), 3.0)
+    assert_f("identity y", core.geom_apply_y(g, 3.0, 4.0), 4.0)
+
+    core.geom_translate(g, 10.0, 20.0)
+    assert_f("translate x", core.geom_apply_x(g, 1.0, 1.0), 11.0)
+    assert_f("translate y", core.geom_apply_y(g, 1.0, 1.0), 21.0)
+
+    // scale AFTER translate scales the translation too (Ebiten order)
+    core.geom_scale(g, 2.0, 3.0)
+    assert_f("scale x", core.geom_apply_x(g, 1.0, 1.0), 22.0)
+    assert_f("scale y", core.geom_apply_y(g, 1.0, 1.0), 63.0)
+
+    // rotate 90deg clockwise: (1,0) -> (0,1)
+    r = core.geom_new()
+    core.geom_rotate(r, PI / 2.0)
+    assert_f("rot90 x", core.geom_apply_x(r, 1.0, 0.0), 0.0)
+    assert_f("rot90 y", core.geom_apply_y(r, 1.0, 0.0), 1.0)
+
+    // concat: g2 = translate(1,0); concat(scale2) => scale applied after
+    g2 = core.geom_new()
+    core.geom_translate(g2, 1.0, 0.0)
+    s2 = core.geom_new()
+    core.geom_scale(s2, 2.0, 2.0)
+    core.geom_concat(g2, s2)
+    assert_f("concat x", core.geom_apply_x(g2, 0.0, 0.0), 2.0)
+
+    // invert roundtrip
+    inv = core.geom_clone(g)
+    assert_i("invertible", core.geom_is_invertible(inv), 1)
+    core.geom_invert(inv)
+    xx = core.geom_apply_x(g, 5.0, 7.0)
+    yy = core.geom_apply_y(g, 5.0, 7.0)
+    assert_f("invert x", core.geom_apply_x(inv, xx, yy), 5.0)
+    assert_f("invert y", core.geom_apply_y(inv, xx, yy), 7.0)
+
+    // element get/set
+    e = core.geom_new()
+    core.geom_set_element(e, 0, 2, 9.0)
+    assert_f("elem tx", core.geom_element(e, 0, 2), 9.0)
+    assert_f("elem a", core.geom_element(e, 0, 0), 1.0)
+
+    // ── Image basics ──
+    img = core.image_new(4, 4)
+    assert_i("img w", core.image_w(img), 4)
+    core.image_fill(img, 255, 0, 0, 255)
+    assert_i("fill r", core.image_at_r(img, 2, 2), 255)
+    assert_i("fill g", core.image_at_g(img, 2, 2), 0)
+    assert_i("fill a", core.image_at_a(img, 2, 2), 255)
+
+    core.image_set(img, 1, 1, 0, 255, 0, 255)
+    assert_i("set g", core.image_at_g(img, 1, 1), 255)
+
+    // sub-image bounds
+    sub = core.image_sub(img, 1, 1, 3, 3)
+    assert_i("sub w", core.image_w(sub), 2)
+    assert_i("sub x0", core.image_bounds_x0(sub), 1)
+    assert_i("sub is_sub", core.image_is_sub(sub), 1)
+
+    // ── DrawImage: translate copy ──
+    dst = core.image_new(4, 4)
+    core.image_fill(dst, 0, 0, 0, 255)
+    src = core.image_new(2, 2)
+    core.image_fill(src, 255, 255, 255, 255)
+    o = core.opts_new()
+    core.geom_translate(core.opts_geom(o), 1.0, 1.0)
+    core.draw_image(dst, src, o)
+    assert_i("blit (1,1) white", core.image_at_r(dst, 1, 1), 255)
+    assert_i("blit (2,2) white", core.image_at_r(dst, 2, 2), 255)
+    assert_i("blit (0,0) black", core.image_at_r(dst, 0, 0), 0)
+    assert_i("blit (3,3) black", core.image_at_r(dst, 3, 3), 0)
+
+    // ── DrawImage: null opts = identity ──
+    dst2 = core.image_new(2, 2)
+    core.image_fill(dst2, 0, 0, 255, 255)
+    core.draw_image(dst2, src, null)
+    assert_i("null opts blit", core.image_at_r(dst2, 0, 0), 255)
+
+    // ── DrawImage: source-over with half alpha ──
+    dst3 = core.image_new(2, 2)
+    core.image_fill(dst3, 0, 0, 0, 255)
+    src3 = core.image_new(2, 2)
+    core.image_fill(src3, 255, 0, 0, 128)
+    core.draw_image(dst3, src3, null)
+    assert_b("half-alpha r", core.image_at_r(dst3, 0, 0), 128)
+    assert_b("half-alpha a", core.image_at_a(dst3, 0, 0), 255)
+
+    // ── DrawImage: colorscale alpha 0.5 on white over black ──
+    dst4 = core.image_new(2, 2)
+    core.image_fill(dst4, 0, 0, 0, 255)
+    o4 = core.opts_new()
+    core.opts_color_scale_alpha(o4, 0.5)
+    core.draw_image(dst4, src, o4)
+    assert_b("cs alpha r", core.image_at_r(dst4, 0, 0), 128)
+
+    // ── DrawImage: blend copy replaces dst alpha ──
+    dst5 = core.image_new(2, 2)
+    core.image_fill(dst5, 0, 255, 0, 255)
+    o5 = core.opts_new()
+    core.opts_set_blend(o5, core.BLEND_COPY)
+    core.draw_image(dst5, src3, o5)
+    assert_b("copy r", core.image_at_r(dst5, 0, 0), 255)
+    assert_b("copy a", core.image_at_a(dst5, 0, 0), 128)
+    assert_b("copy g", core.image_at_g(dst5, 0, 0), 0)
+
+    // ── DrawImage: rotation 90 degrees of a 2x1 strip ──
+    // src6: (0,0)=red, (1,0)=blue. rotate 90cw about origin then translate
+    // x+1: A(0..1,0..1)->dst(0..1? ) — after rot90, the strip occupies
+    // x in [-1,0], y in [0,2]; translate(1,0) puts it at x [0,1], y [0,2]:
+    // dst(0,0) <- src(0,0) red? rot90 maps (u,v)->(-v,u); texel (0.5,0.5)
+    // -> (-0.5,0.5)+1 = (0.5,0.5) => dst(0,0)=src texel 0 (red);
+    // texel (1.5,0.5) -> (-0.5,1.5)+1 = (0.5,1.5) => dst(0,1)=blue.
+    src6 = core.image_new(2, 1)
+    core.image_set(src6, 0, 0, 255, 0, 0, 255)
+    core.image_set(src6, 1, 0, 0, 0, 255, 255)
+    dst6 = core.image_new(2, 2)
+    core.image_fill(dst6, 0, 0, 0, 255)
+    o6 = core.opts_new()
+    core.geom_rotate(core.opts_geom(o6), PI / 2.0)
+    core.geom_translate(core.opts_geom(o6), 1.0, 0.0)
+    core.draw_image(dst6, src6, o6)
+    assert_i("rot dst(0,0) red", core.image_at_r(dst6, 0, 0), 255)
+    assert_i("rot dst(0,1) blue", core.image_at_b(dst6, 0, 1), 255)
+
+    // ── DrawImage: sub-image as source (sprite-sheet crop) ──
+    sheet = core.image_new(4, 4)
+    core.image_fill(sheet, 10, 10, 10, 255)
+    core.image_set(sheet, 2, 2, 200, 100, 50, 255)
+    crop = core.image_sub(sheet, 2, 2, 4, 4)
+    dst7 = core.image_new(2, 2)
+    core.image_fill(dst7, 0, 0, 0, 255)
+    core.draw_image(dst7, crop, null)
+    assert_i("crop (0,0) r", core.image_at_r(dst7, 0, 0), 200)
+    assert_i("crop (1,1) r", core.image_at_r(dst7, 1, 1), 10)
+
+    // ── DrawImage: sub-image as destination clips, keeps root coords ──
+    root8 = core.image_new(4, 4)
+    core.image_fill(root8, 0, 0, 0, 255)
+    win8 = core.image_sub(root8, 1, 1, 3, 3)
+    o8 = core.opts_new()
+    // draw the 2x2 white src at root origin: only (1,1) survives the clip
+    core.draw_image(win8, src, o8)
+    assert_i("subdst (0,0) clipped", core.image_at_r(root8, 0, 0), 0)
+    assert_i("subdst (1,1) drawn", core.image_at_r(root8, 1, 1), 255)
+    assert_i("subdst (2,2) outside src", core.image_at_r(root8, 2, 2), 0)
+
+    // ── read/write pixels roundtrip ──
+    buf = malloc(4 * 4 * 4)
+    core.image_read_pixels(img, buf)
+    img2 = core.image_new(4, 4)
+    core.image_write_pixels(img2, buf)
+    assert_i("rw roundtrip", core.image_at_g(img2, 1, 1), 255)
+
+    // ── ColorM ──
+    cm = core.colorm_new()
+    assert_i("cm identity", core.colorm_is_identity(cm), 1)
+    assert_f("cm apply id r", core.colorm_apply_chan(cm, 0.5, 0.25, 1.0, 1.0, 0), 0.5)
+    core.colorm_scale(cm, 2.0, 1.0, 1.0, 1.0)
+    assert_f("cm scale r", core.colorm_apply_chan(cm, 0.5, 0.0, 0.0, 1.0, 0), 1.0)
+    core.colorm_reset(cm)
+    core.colorm_translate(cm, 0.25, 0.0, 0.0, 0.0)
+    assert_f("cm translate r", core.colorm_apply_chan(cm, 0.5, 0.0, 0.0, 1.0, 0), 0.75)
+
+    // hue rotate by 2pi is ~identity
+    core.colorm_reset(cm)
+    core.colorm_rotate_hue(cm, 2.0 * PI)
+    rr = core.colorm_apply_chan(cm, 0.8, 0.4, 0.2, 1.0, 0)
+    d = rr - 0.8
+    if d < 0.0 { d = 0.0 - d }
+    if d > 0.001 {
+        println("FAIL hue 2pi: got ${rr}")
+        exit(1)
+    }
+
+    // saturation 0 → grayscale: pure red becomes Y=0.299 on all channels
+    core.colorm_reset(cm)
+    core.colorm_change_hsv(cm, 0.0, 0.0, 1.0)
+    gy = core.colorm_apply_chan(cm, 1.0, 0.0, 0.0, 1.0, 1)
+    d = gy - 0.299
+    if d < 0.0 { d = 0.0 - d }
+    if d > 0.01 {
+        println("FAIL grayscale: got ${gy}")
+        exit(1)
+    }
+
+    // invert matrix through the blitter: red -> cyan
+    inv_cm = core.colorm_new()
+    core.colorm_scale(inv_cm, 0.0 - 1.0, 0.0 - 1.0, 0.0 - 1.0, 1.0)
+    core.colorm_translate(inv_cm, 1.0, 1.0, 1.0, 0.0)
+    dst9 = core.image_new(1, 1)
+    core.image_fill(dst9, 0, 0, 0, 255)
+    src9 = core.image_new(1, 1)
+    core.image_fill(src9, 255, 0, 0, 255)
+    o9 = core.opts_new()
+    core.opts_set_colorm(o9, inv_cm)
+    core.draw_image(dst9, src9, o9)
+    assert_b("cm invert r", core.image_at_r(dst9, 0, 0), 0)
+    assert_b("cm invert g", core.image_at_g(dst9, 0, 0), 255)
+    assert_b("cm invert b", core.image_at_b(dst9, 0, 0), 255)
+
+    // ── DrawTriangles: two triangles = colored quad over white src ──
+    dstT = core.image_new(8, 8)
+    core.image_fill(dstT, 0, 0, 0, 255)
+    srcT = core.image_new(2, 2)
+    core.image_fill(srcT, 255, 255, 255, 255)
+    verts = malloc(4 * 64)
+    core.vertex_set(verts, 0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    core.vertex_set(verts, 1, 8.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    core.vertex_set(verts, 2, 0.0, 8.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0)
+    core.vertex_set(verts, 3, 8.0, 8.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0)
+    idx = malloc(6 * 4)
+    mem.set_int(idx, 0, 0)
+    mem.set_int(idx, 4, 1)
+    mem.set_int(idx, 8, 2)
+    mem.set_int(idx, 12, 1)
+    mem.set_int(idx, 16, 3)
+    mem.set_int(idx, 20, 2)
+    core.draw_triangles(dstT, srcT, verts, 4, idx, 6, null)
+    assert_i("tris (1,1) red", core.image_at_r(dstT, 1, 1), 255)
+    assert_i("tris (6,6) red", core.image_at_r(dstT, 6, 6), 255)
+    assert_i("tris (1,1) g", core.image_at_g(dstT, 1, 1), 0)
+
+    println("test_core OK")
+}

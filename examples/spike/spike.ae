@@ -1,0 +1,79 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// spike.ae — build/runtime spike for the Ebiten→Aether port.
+//
+// Exercises the exact frame pipeline the ported engine will use:
+// a malloc'd RGBA8888 framebuffer repainted every tick, blitted to an
+// aether-ui canvas via canvas_draw_image_ptr on a ~60Hz ui.timer.
+//
+//   DISPLAY=:0 ./build/spike
+
+import ui
+import ui (window)
+import std.mem
+
+extern malloc(size: int) -> ptr
+extern println(s: string)
+
+const W: int = 320
+const H: int = 240
+
+// Poke one RGBA pixel into the framebuffer.
+put_px(buf: ptr, i: int, r: int, g: int, b: int, a: int) {
+    off = i * 4
+    mem.set_byte(buf, off, r)
+    mem.set_byte(buf, off + 1, g)
+    mem.set_byte(buf, off + 2, b)
+    mem.set_byte(buf, off + 3, a)
+}
+
+// Paint frame: dark blue field with a moving white square.
+paint(buf: ptr, frame: int) {
+    y = 0
+    while y < H {
+        x = 0
+        while x < W {
+            put_px(buf, y * W + x, 20, 30, 60, 255)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    sx = (frame * 2) % (W - 32)
+    sy = 100
+    y = sy
+    while y < sy + 32 {
+        x = sx
+        while x < sx + 32 {
+            put_px(buf, y * W + x, 255, 255, 255, 255)
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+main() {
+    buf = malloc(W * H * 4)
+    frame = 0
+    window("Ebiten Spike", 340, 280) {
+        c = ui.canvas_create(W, H)
+        ui.timer(16) callback {
+            frame = frame + 1
+            paint(buf, frame)
+            ui.canvas_clear(c)
+            ui.canvas_draw_image_ptr(c, 0.0, 0.0, W, H, buf, W * H * 4)
+            ui.canvas_redraw(c)
+        }
+    }
+}

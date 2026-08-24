@@ -1,0 +1,127 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// life.ae — port of examples/life/main.go: Conway's Game of Life, drawn by
+// writing the whole pixel buffer each frame (the WritePixels path).
+//
+//   DISPLAY=:0 ./target/build/examples/life/bin/life
+
+import ebiten
+import ebiten.core
+import std.mem
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+
+const W: int = 320
+const H: int = 240
+
+struct World {
+    area: ptr      // 1 byte per cell
+    next: ptr
+    pixels: ptr    // W*H*4 RGBA
+    seed: int
+}
+
+rand_n(w: *World, n: int) -> int {
+    w.seed = w.seed * 1103515245 + 12345
+    v = (w.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % n
+}
+
+world_init(w: *World, max_live: int) {
+    i = 0
+    while i < max_live {
+        x = rand_n(w, W)
+        y = rand_n(w, H)
+        mem.set_byte(w.area, y * W + x, 1)
+        i = i + 1
+    }
+}
+
+// Count live neighbours of (x, y), edges clamped out.
+neighbours(w: *World, x: int, y: int) -> int {
+    c = 0
+    j = y - 1
+    while j <= y + 1 {
+        i = x - 1
+        while i <= x + 1 {
+            if i >= 0 && i < W && j >= 0 && j < H {
+                if i != x || j != y {
+                    c = c + mem.get_byte(w.area, j * W + i)
+                }
+            }
+            i = i + 1
+        }
+        j = j + 1
+    }
+    return c
+}
+
+world_update(w: *World) {
+    y = 0
+    while y < H {
+        x = 0
+        while x < W {
+            pop = neighbours(w, x, y)
+            alive = mem.get_byte(w.area, y * W + x)
+            state = 0
+            if alive == 1 && (pop == 2 || pop == 3) { state = 1 }
+            if alive == 0 && pop == 3 { state = 1 }
+            mem.set_byte(w.next, y * W + x, state)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    tmp = w.area
+    w.area = w.next
+    w.next = tmp
+}
+
+world_draw(w: *World) {
+    i = 0
+    n = W * H
+    while i < n {
+        v = 0
+        if mem.get_byte(w.area, i) == 1 { v = 255 }
+        off = i * 4
+        mem.set_byte(w.pixels, off, v)
+        mem.set_byte(w.pixels, off + 1, v)
+        mem.set_byte(w.pixels, off + 2, v)
+        mem.set_byte(w.pixels, off + 3, 255)
+        i = i + 1
+    }
+}
+
+main() {
+    w = calloc(1, 64) as *World
+    w.area = calloc(W * H, 1)
+    w.next = calloc(W * H, 1)
+    w.pixels = malloc(W * H * 4)
+    w.seed = 20240824
+    world_init(w, W * H / 10)
+
+    e = ebiten.game_new(W, H)
+    ebiten.set_scale(e, 2.0)
+    ebiten.on_update(e) callback {
+        world_update(w)
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        world_draw(w)
+        core.image_write_pixels(screen, w.pixels)
+    }
+    ebiten.run(e, "Game of Life (Ebitengine Demo)", W * 2 + 20, H * 2 + 40)
+}

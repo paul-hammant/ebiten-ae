@@ -1,0 +1,46 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_png.ae — decode ebitenutil/text.png (the DebugPrint font sheet) and
+// check dims + ground-truth pixels (reference values from PIL).
+//   ae run --extra ebiten/aether_ebiten_blit.c tests/test_png.ae
+
+import ebiten.core
+import ebiten.png
+
+extern println(s: string)
+extern exit(code: int)
+
+assert_i(name: string, got: int, want: int) {
+    if got != want {
+        println("FAIL ${name}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+main() {
+    img = png.png_load("tests/testdata/text.png")
+    if img == null {
+        println("FAIL: decode returned null")
+        exit(1)
+    }
+    assert_i("w", core.image_w(img), 192)
+    assert_i("h", core.image_h(img), 128)
+    // PIL: first opaque pixel at (0,3) = white opaque; (1,17) transparent.
+    assert_i("px(0,3) r", core.image_at_r(img, 0, 3), 255)
+    assert_i("px(0,3) a", core.image_at_a(img, 0, 3), 255)
+    assert_i("px(0,0) a", core.image_at_a(img, 0, 0), 0)
+    assert_i("px(1,17) a", core.image_at_a(img, 1, 17), 0)
+    println("test_png OK")
+}

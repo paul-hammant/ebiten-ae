@@ -1,0 +1,89 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_vector.ae — vector primitives + scanline path fill.
+import ebiten.core
+import ebiten.vector
+
+extern println(s: string)
+extern exit(code: int)
+
+assert_i(name: string, got: int, want: int) {
+    if got != want {
+        println("FAIL ${name}: got ${got} want ${want}")
+        exit(1)
+    }
+}
+
+main() {
+    // fill_circle centered in 20x20
+    img = core.image_new(20, 20)
+    core.image_fill(img, 0, 0, 0, 255)
+    vector.fill_circle(img, 10.0, 10.0, 5.0, 255, 0, 0, 255)
+    assert_i("circle center", core.image_at_r(img, 10, 10), 255)
+    assert_i("circle inside", core.image_at_r(img, 7, 10), 255)
+    assert_i("circle outside", core.image_at_r(img, 3, 10), 0)
+    assert_i("circle corner", core.image_at_r(img, 0, 0), 0)
+
+    // stroke_line horizontal, width 3
+    img2 = core.image_new(20, 20)
+    core.image_fill(img2, 0, 0, 0, 255)
+    vector.stroke_line(img2, 2.0, 10.0, 18.0, 10.0, 3.0, 0, 255, 0, 255)
+    assert_i("line mid", core.image_at_g(img2, 10, 10), 255)
+    assert_i("line above", core.image_at_g(img2, 10, 9), 255)
+    assert_i("line far above", core.image_at_g(img2, 10, 5), 0)
+
+    // fill_path: triangle
+    img3 = core.image_new(20, 20)
+    core.image_fill(img3, 0, 0, 0, 255)
+    p = vector.path_new()
+    vector.path_move_to(p, 10.0, 2.0)
+    vector.path_line_to(p, 18.0, 18.0)
+    vector.path_line_to(p, 2.0, 18.0)
+    vector.path_close(p)
+    vector.fill_path(img3, p, 0, 0, 255, 255, vector.FILL_RULE_NON_ZERO)
+    vector.path_free(p)
+    assert_i("tri centroid", core.image_at_b(img3, 10, 12), 255)
+    assert_i("tri apex-side out", core.image_at_b(img3, 2, 4), 0)
+    assert_i("tri bottom in", core.image_at_b(img3, 10, 17), 255)
+
+    // even-odd: square with square hole
+    img4 = core.image_new(20, 20)
+    core.image_fill(img4, 0, 0, 0, 255)
+    p2 = vector.path_new()
+    vector.path_move_to(p2, 2.0, 2.0)
+    vector.path_line_to(p2, 18.0, 2.0)
+    vector.path_line_to(p2, 18.0, 18.0)
+    vector.path_line_to(p2, 2.0, 18.0)
+    vector.path_close(p2)
+    vector.path_move_to(p2, 6.0, 6.0)
+    vector.path_line_to(p2, 14.0, 6.0)
+    vector.path_line_to(p2, 14.0, 14.0)
+    vector.path_line_to(p2, 6.0, 14.0)
+    vector.path_close(p2)
+    vector.fill_path(img4, p2, 255, 255, 0, 255, vector.FILL_RULE_EVEN_ODD)
+    vector.path_free(p2)
+    assert_i("ring outer in", core.image_at_r(img4, 4, 10), 255)
+    assert_i("ring hole out", core.image_at_r(img4, 10, 10), 0)
+    assert_i("ring outside", core.image_at_r(img4, 0, 10), 0)
+
+    // stroke_rect leaves interior empty
+    img5 = core.image_new(20, 20)
+    core.image_fill(img5, 0, 0, 0, 255)
+    vector.stroke_rect(img5, 4.0, 4.0, 12.0, 12.0, 2.0, 255, 0, 255, 255)
+    assert_i("srect edge", core.image_at_r(img5, 4, 10), 255)
+    assert_i("srect interior", core.image_at_r(img5, 10, 10), 0)
+
+    println("test_vector OK")
+}

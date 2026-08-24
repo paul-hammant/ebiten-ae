@@ -1,14 +1,8 @@
-.DS_Store
-*~
-*.aar
-*.apk
-*.tar.gz
-.idea
-.vscode
-go.work
-go.work.sum
+# aeb build outputs
+/target/
+/build/
 
-*.fxc
-!dummy.fxc
-*.metallib
-!dummy.metallib
+# editor/OS junk
+*.swp
+.DS_Store
+.idea/

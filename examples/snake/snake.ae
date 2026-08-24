@@ -1,0 +1,218 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// snake.ae — port of examples/snake/main.go (Ebiten demo) to the Aether
+// engine. Same rules: WASD/arrows steer, no U-turns, apple grows the body,
+// walls/self reset, speed rises with length. Escape resets.
+//
+// Not yet ported from the Go original: ebitenutil.DebugPrint HUD (needs the
+// bitmap font — see AE-MIGRATION.md).
+//
+//   DISPLAY=:0 ./target/build/examples/snake/bin/snake
+
+import ebiten
+import ebiten.core
+import std.mem
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+
+const SCREEN_W: int = 640
+const SCREEN_H: int = 480
+const GRID: int = 10
+const XCELLS: int = 64
+const YCELLS: int = 48
+const MAX_BODY: int = 3072
+
+const DIR_NONE: int = 0
+const DIR_LEFT: int = 1
+const DIR_RIGHT: int = 2
+const DIR_DOWN: int = 3
+const DIR_UP: int = 4
+
+struct Game {
+    move_dir: int
+    body: ptr        // int pairs (x, y) * MAX_BODY
+    body_len: int
+    apple_x: int
+    apple_y: int
+    timer: int
+    move_time: int
+    score: int
+    best_score: int
+    level: int
+    seed: int
+}
+
+body_x(g: *Game, i: int) -> int { return mem.get_int(g.body, i * 8) }
+body_y(g: *Game, i: int) -> int { return mem.get_int(g.body, i * 8 + 4) }
+body_set(g: *Game, i: int, x: int, y: int) {
+    mem.set_int(g.body, i * 8, x)
+    mem.set_int(g.body, i * 8 + 4, y)
+}
+
+// LCG random in [0, n)
+rand_n(g: *Game, n: int) -> int {
+    g.seed = g.seed * 1103515245 + 12345
+    v = (g.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % n
+}
+
+reset(g: *Game) {
+    g.apple_x = XCELLS / 3
+    g.apple_y = YCELLS / 3
+    g.move_time = 4
+    g.body_len = 1
+    body_set(g, 0, XCELLS / 2, YCELLS / 2)
+    g.score = 0
+    g.level = 1
+    g.move_dir = DIR_NONE
+}
+
+game_make() -> *Game {
+    g = calloc(1, 96) as *Game
+    g.body = malloc(MAX_BODY * 8)
+    g.seed = 12345
+    reset(g)
+    return g
+}
+
+collides_with_apple(g: *Game) -> int {
+    if body_x(g, 0) == g.apple_x && body_y(g, 0) == g.apple_y { return 1 }
+    return 0
+}
+
+collides_with_self(g: *Game) -> int {
+    i = 1
+    while i < g.body_len {
+        if body_x(g, 0) == body_x(g, i) && body_y(g, 0) == body_y(g, i) {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+collides_with_wall(g: *Game) -> int {
+    hx = body_x(g, 0)
+    hy = body_y(g, 0)
+    if hx < 0 || hy < 0 || hx >= XCELLS || hy >= YCELLS { return 1 }
+    return 0
+}
+
+// Either of two keys just pressed this tick.
+just2(e: ptr, k1: int, k2: int) -> int {
+    if ebiten.is_key_just_pressed(e, k1) == 1 { return 1 }
+    return ebiten.is_key_just_pressed(e, k2)
+}
+
+// Direction from input; U-turns forbidden (as the Go original).
+steer(e: ptr, g: *Game) {
+    if just2(e, ebiten.KEY_LEFT, ebiten.KEY_A) == 1 {
+        if g.move_dir != DIR_RIGHT { g.move_dir = DIR_LEFT }
+        return
+    }
+    if just2(e, ebiten.KEY_RIGHT, ebiten.KEY_D) == 1 {
+        if g.move_dir != DIR_LEFT { g.move_dir = DIR_RIGHT }
+        return
+    }
+    if just2(e, ebiten.KEY_DOWN, ebiten.KEY_S) == 1 {
+        if g.move_dir != DIR_UP { g.move_dir = DIR_DOWN }
+        return
+    }
+    if just2(e, ebiten.KEY_UP, ebiten.KEY_W) == 1 {
+        if g.move_dir != DIR_DOWN { g.move_dir = DIR_UP }
+        return
+    }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_ESCAPE) == 1 { reset(g) }
+}
+
+update(e: ptr, g: *Game) {
+    steer(e, g)
+
+    if g.timer % g.move_time == 0 {
+        if collides_with_wall(g) == 1 || collides_with_self(g) == 1 {
+            reset(g)
+        }
+
+        if collides_with_apple(g) == 1 {
+            g.apple_x = rand_n(g, XCELLS - 1)
+            g.apple_y = rand_n(g, YCELLS - 1)
+            if g.body_len < MAX_BODY {
+                body_set(g, g.body_len,
+                    body_x(g, g.body_len - 1), body_y(g, g.body_len - 1))
+                g.body_len = g.body_len + 1
+            }
+            if g.body_len > 10 && g.body_len < 20 {
+                g.level = 2
+                g.move_time = 3
+            } else {
+                if g.body_len > 20 {
+                    g.level = 3
+                    g.move_time = 2
+                } else {
+                    g.level = 1
+                }
+            }
+            g.score = g.score + 1
+            if g.best_score < g.score { g.best_score = g.score }
+        }
+
+        i = g.body_len - 1
+        while i > 0 {
+            body_set(g, i, body_x(g, i - 1), body_y(g, i - 1))
+            i = i - 1
+        }
+        if g.move_dir == DIR_LEFT { body_set(g, 0, body_x(g, 0) - 1, body_y(g, 0)) }
+        if g.move_dir == DIR_RIGHT { body_set(g, 0, body_x(g, 0) + 1, body_y(g, 0)) }
+        if g.move_dir == DIR_DOWN { body_set(g, 0, body_x(g, 0), body_y(g, 0) + 1) }
+        if g.move_dir == DIR_UP { body_set(g, 0, body_x(g, 0), body_y(g, 0) - 1) }
+    }
+
+    g.timer = g.timer + 1
+}
+
+draw(e: ptr, screen: ptr, g: *Game) {
+    core.image_fill(screen, 0, 0, 0, 255)
+    i = 0
+    while i < g.body_len {
+        core.image_fill_rect(screen, body_x(g, i) * GRID, body_y(g, i) * GRID,
+            GRID, GRID, 128, 160, 192, 255)
+        i = i + 1
+    }
+    core.image_fill_rect(screen, g.apple_x * GRID, g.apple_y * GRID,
+        GRID, GRID, 255, 0, 0, 255)
+
+    if g.move_dir == DIR_NONE {
+        ebiten.debug_print(e, screen, "Press up/down/left/right to start")
+    } else {
+        fps = ebiten.actual_fps(e)
+        ebiten.debug_print(e, screen,
+            "FPS: ${fps} Level: ${g.level} Score: ${g.score} Best Score: ${g.best_score}")
+    }
+}
+
+main() {
+    g = game_make()
+    e = ebiten.game_new(SCREEN_W, SCREEN_H)
+    ebiten.on_update(e) callback {
+        update(e, g)
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        draw(e, screen, g)
+    }
+    ebiten.run(e, "Snake (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+}

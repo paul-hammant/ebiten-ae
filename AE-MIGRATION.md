@@ -1,0 +1,100 @@
+# Ebiten → Aether migration (in-situ)
+
+Converting this engine from Go to [Aether](../aether) with
+[aether-ui](../aether-ui) as the display/input layer. The original Go tree
+lives on the `legacy_golang` branch as the porting oracle; `main` holds the
+Aether engine, laid out idiomatically (Apache 2.0, portions copyright the
+original authors — see NOTICE.md). Pattern follows mquickjs-port / avn /
+zsync-port: leaf-first, parity-tested, oracle on a legacy branch.
+
+## Architecture decision
+
+Ebiten's stack below the public API — `internal/glfw` (24k lines),
+`internal/graphicsdriver` (20k, OpenGL/Metal/DirectX), `internal/ui` (14k),
+mobile/js/playstation5 glue — is **not ported**. aether-ui replaces it:
+
+- **Every `ebiten.Image` is a CPU-side RGBA8888 buffer.** `DrawImage` is a
+  software blit: inverse-affine sampling (GeoM), ColorScale in premultiplied
+  domain, ColorM in straight-alpha domain, full blend-factor table, nearest +
+  linear filters. All engine logic (matrices, options, clipping, blend
+  tables) is Aether; the per-pixel inner loops live in one C file
+  (`ebiten/aether_ebiten_blit.c`) for the same reason std.audio's device
+  pull and aether-ui's canvas primitives are C — measured 235x on the
+  tile-map workload (141ms → 0.6ms per 300-tile frame), 7x on rotated
+  blits (27ms → 3.8ms per rotated 320×240 frame).
+- **The screen is one such Image**, pushed to an aether-ui canvas each frame
+  (`canvas_draw_image_ptr` / `vg.live` video_region) on a `ui.timer` tick.
+- **Game loop**: fixed-TPS `update` accumulator (60Hz, `std.os`
+  monotonic clock) + per-frame `draw`, Ebiten semantics.
+- **Input**: `canvas_on_key` / `canvas_on_click` / `canvas_on_move` /
+  `canvas_on_scroll` feed a key/mouse state table; `inpututil`-style
+  just-pressed/just-released derived per tick.
+  GAP: aether-ui has no key-release event yet → needs `canvas_on_key_release`
+  upstream (GTK4 real, macOS/win32 stubs per the both-servers rule).
+
+## Layout
+
+- `ebiten/core.ae` — pure module (`import ebiten.core`), no ui dependency,
+  headless-testable: GeoM, ColorScale, blend table, Image + blitter.
+- `ebiten/module.ae` — the engine (`import ebiten`): window/canvas/timer
+  loop, input state, screen present. Depends on `ui` + `ebiten.core`.
+- `examples/<name>/` — ported examples, one aeb node each
+  (`.build.ae` per app, `build_support/ebitenui` supplies the backend link
+  block against `../aether-ui`, override with `AETHER_UI_ROOT`).
+- `tests/` — headless parity tests for the pure modules.
+
+Build: `aeb examples/<name>` from the repo root →
+`target/build/examples/<name>/bin/<name>`.
+
+## Status
+
+| Piece | Go source | Aether | State |
+|---|---|---|---|
+| Build/link spike vs ../aether-ui | — | `examples/spike` | ✅ builds, runs under xvfb |
+| GeoM | `geom.go` | `ebiten/core.ae` | ✅ + tests |
+| ColorScale | `colorscale.go` | `ebiten/core.ae` (embedded in Opts) | ✅ + tests |
+| Blend (factors + 13 named modes) | `blend.go` | `ebiten/core.ae` | ✅ + tests (custom factor combos: todo) |
+| Image + DrawImage blitter | `image.go` (API); software renderer replaces GPU path | `ebiten/core.ae` | ✅ + tests (nearest/linear, sub-image src+dst, fill/set/at, read/write pixels) |
+| ColorM 4×5 (`colorm` pkg) | `colorm/`, `internal/affine` | `ebiten/core.ae` `colorm_*` | ✅ + tests (scale/translate/concat/hue/HSV; blitter-integrated) |
+| Game loop / RunGame | `run.go`, `gameforui.go`, `internal/clock` | `ebiten/module.ae` | ✅ fixed 60 TPS accumulator + per-frame draw + FPS counter + window scale (`set_scale`) |
+| Keys + input state | `keys.go`, `input.go`, `internal/inputstate` | `ebiten/module.ae` | ✅ (key-release added to aether-ui upstream; ~75 keys mapped) |
+| inpututil (just pressed/released) | `inpututil/` | `ebiten/module.ae` | ✅ keys + left mouse; wheel per tick |
+| ebitenutil DebugPrint | `ebitenutil/`, `text.png` | `ebiten/util.ae` | ✅ font sheet embedded (hex) + scaled/aligned variant |
+| vector | `vector/` | `ebiten/vector.ae` | ✅ + tests (fill/stroke rect+circle+line, Path with quad/cubic/arc, nonzero+even-odd scanline fill; no AA yet) |
+| PNG decode (assets) | `internal/png` | `ebiten/png.ae` | ✅ + tests (8-bit gray/RGB/palette/GA/RGBA, all filters; no interlace/16-bit) |
+| audio | `audio/` | `ebiten/audio.ae` | ✅ + tests over `std.audio` (WAV + whatever miniaudio sniffs; real device backend) |
+| text (TTF, text/v2) | `text/` | todo | via aether-ui `vg` font machinery; DebugPrint-scaled is the interim |
+| DrawTriangles | `image.go` | `ebiten/core.ae` | ✅ + tests (barycentric, per-vertex color+UV, straight-alpha mode; pure Aether — hot-path C port when an example needs it) |
+| Shaders (Kage) | `shader.go`, `internal/shader*` | **deferred** | no software-shader story yet |
+| gamepad, vibrate, mobile, js, ps5 | `internal/gamepad` etc | **not ported** | out of scope for canvas backend |
+
+## Ported examples
+
+| Example | State |
+|---|---|
+| `examples/spike` | ✅ pipeline proof (buffer → canvas at 60Hz) |
+| `examples/snake` | ✅ full port incl. HUD; driver-verified (keys, movement, screenshot) |
+| `examples/rotate` | ✅ (ebiten.png asset in place of gophers.jpg — no JPEG decoder) |
+| `examples/flappy` | ✅ full port, driver-verified through game-over (bitmap font for TTF text; ogg→wav fallback; no CRT/touch/gamepad) |
+| `examples/life` | ✅ (WritePixels path; runs at 2x window scale via `set_scale`) |
+| `examples/paint` | ✅ (ColorM hue-rotating brush; driver-verified drag painting) |
+| `examples/polygons` | ✅ (DrawTriangles rainbow n-gon; Up/Down replaces the debugui slider) |
+| `examples/doomfire` | ✅ (classic PSX fire, 100x50 at 6x scale) |
+| `examples/2048` | ✅ full game (palette, slide+pop animations, scoring; bitmap font for TTF, no touch) |
+
+CI: `./ci.sh` — headless unit tests, full example build (`aeb all.ae`),
+snake driver smoke under xvfb.
+
+## Not ported (replaced or dropped)
+
+`internal/{glfw, graphicsdriver, ui, atlas, packing, buffered,
+graphicscommand, mipmap, thread, cocoa, microsoftgdk, winver, fbdev, vibrate,
+gamepad, gamepaddb}`, `mobile/`, `playstation5/`, JS/WASM support — the
+aether-ui backends (GTK4/AppKit/Win32) own windowing, present, and input
+delivery.
+
+## aether-ui upstream changes this port drove
+
+- `canvas_on_key_release` (+ driver `POST /canvas/{id}/keyup`) — commit 8732365.
+- `canvas_draw_image_scaled_ptr` — ptr-buffer twin of the scaled blit, for the
+  engine's window scaling.

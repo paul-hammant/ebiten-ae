@@ -1,0 +1,54 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import ebiten.core
+import std.os
+extern println(s: string)
+
+main() {
+    screen = core.image_new(640, 480)
+    tile = core.image_new(32, 32)
+    core.image_fill(tile, 100, 150, 200, 255)
+    o = core.opts_new()
+    g = core.opts_geom(o)
+    t0 = os.now_monotonic_ms()
+    f = 0
+    while f < 60 {
+        n = 0
+        while n < 300 {
+            core.geom_reset(g)
+            core.geom_translate(g, ((n * 37) % 600) * 1.0, ((n * 53) % 440) * 1.0)
+            core.draw_image(screen, tile, o)
+            n = n + 1
+        }
+        f = f + 1
+    }
+    t1 = os.now_monotonic_ms()
+    println("60 frames x 300 32px tiles: ${t1 - t0}ms (${(t1 - t0) / 60}ms/frame)")
+
+    // rotated full-screen-ish blit
+    big = core.image_new(320, 240)
+    core.image_fill(big, 200, 100, 50, 255)
+    t2 = os.now_monotonic_ms()
+    f = 0
+    while f < 60 {
+        core.geom_reset(g)
+        core.geom_rotate(g, 0.3)
+        core.geom_translate(g, 200.0, 100.0)
+        core.draw_image(screen, big, o)
+        f = f + 1
+    }
+    t3 = os.now_monotonic_ms()
+    println("60 rotated 320x240 blits: ${t3 - t2}ms (${(t3 - t2) / 60}ms/frame)")
+}

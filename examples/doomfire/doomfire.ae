@@ -1,0 +1,151 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// doomfire.ae — port of examples/doomfire/main.go: the classic PSX DOOM
+// fire, 100x50 logical pixels upscaled 6x (the Go original scales in Layout).
+//
+//   DISPLAY=:0 ./target/build/examples/doomfire/bin/doomfire
+
+import ebiten
+import ebiten.core
+import std.mem
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+
+const W: int = 100
+const H: int = 50
+const SIZE: int = 5000
+
+struct Fire {
+    indices: ptr   // 1 byte per cell (0..36)
+    pixels: ptr    // W*H*4
+    palette: ptr   // 37 * 4 bytes
+    seed: int
+}
+
+pal_set(p: ptr, i: int, r: int, g: int, b: int) {
+    mem.set_byte(p, i * 4, r)
+    mem.set_byte(p, i * 4 + 1, g)
+    mem.set_byte(p, i * 4 + 2, b)
+    mem.set_byte(p, i * 4 + 3, 255)
+}
+
+make_palette() -> ptr {
+    p = malloc(37 * 4)
+    pal_set(p, 0, 7, 7, 7)
+    pal_set(p, 1, 31, 7, 7)
+    pal_set(p, 2, 47, 15, 7)
+    pal_set(p, 3, 71, 15, 7)
+    pal_set(p, 4, 87, 23, 7)
+    pal_set(p, 5, 103, 31, 7)
+    pal_set(p, 6, 119, 31, 7)
+    pal_set(p, 7, 143, 39, 7)
+    pal_set(p, 8, 159, 47, 7)
+    pal_set(p, 9, 175, 63, 7)
+    pal_set(p, 10, 191, 71, 7)
+    pal_set(p, 11, 199, 71, 7)
+    pal_set(p, 12, 223, 79, 7)
+    pal_set(p, 13, 223, 87, 7)
+    pal_set(p, 14, 223, 87, 7)
+    pal_set(p, 15, 215, 95, 7)
+    pal_set(p, 16, 215, 95, 7)
+    pal_set(p, 17, 215, 103, 15)
+    pal_set(p, 18, 207, 111, 15)
+    pal_set(p, 19, 207, 119, 15)
+    pal_set(p, 20, 207, 127, 15)
+    pal_set(p, 21, 207, 135, 23)
+    pal_set(p, 22, 199, 135, 23)
+    pal_set(p, 23, 199, 143, 23)
+    pal_set(p, 24, 199, 151, 31)
+    pal_set(p, 25, 191, 159, 31)
+    pal_set(p, 26, 191, 159, 31)
+    pal_set(p, 27, 191, 167, 39)
+    pal_set(p, 28, 191, 167, 39)
+    pal_set(p, 29, 191, 175, 47)
+    pal_set(p, 30, 183, 175, 47)
+    pal_set(p, 31, 183, 183, 47)
+    pal_set(p, 32, 183, 183, 55)
+    pal_set(p, 33, 207, 207, 111)
+    pal_set(p, 34, 223, 223, 159)
+    pal_set(p, 35, 239, 239, 199)
+    pal_set(p, 36, 255, 255, 255)
+    return p
+}
+
+rand3(f: *Fire) -> int {
+    f.seed = f.seed * 1103515245 + 12345
+    v = (f.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % 3
+}
+
+update_fire(f: *Fire) {
+    i = 0
+    while i < W {
+        j = 0
+        while j < H {
+            idx = i + W * j
+            below = idx + W
+            if below < SIZE {
+                d = rand3(f)
+                ni = mem.get_byte(f.indices, below) - d
+                if ni < 0 { ni = 0 }
+                if idx - d >= 0 {
+                    mem.set_byte(f.indices, idx - d, ni)
+                }
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+render_fire(f: *Fire) {
+    i = 0
+    while i < SIZE {
+        v = mem.get_byte(f.indices, i)
+        mem.set_byte(f.pixels, i * 4, mem.get_byte(f.palette, v * 4))
+        mem.set_byte(f.pixels, i * 4 + 1, mem.get_byte(f.palette, v * 4 + 1))
+        mem.set_byte(f.pixels, i * 4 + 2, mem.get_byte(f.palette, v * 4 + 2))
+        mem.set_byte(f.pixels, i * 4 + 3, 255)
+        i = i + 1
+    }
+}
+
+main() {
+    f = malloc(64) as *Fire
+    f.indices = calloc(SIZE, 1)
+    f.pixels = malloc(SIZE * 4)
+    f.palette = make_palette()
+    f.seed = 666
+    // bottom row burns at full intensity
+    i = SIZE - W
+    while i < SIZE {
+        mem.set_byte(f.indices, i, 36)
+        i = i + 1
+    }
+
+    e = ebiten.game_new(W, H)
+    ebiten.set_scale(e, 6.0)
+    ebiten.on_update(e) callback {
+        update_fire(f)
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        render_fire(f)
+        core.image_write_pixels(screen, f.pixels)
+    }
+    ebiten.run(e, "Doom Fire (Ebitengine Demo)", W * 6 + 20, H * 6 + 40)
+}

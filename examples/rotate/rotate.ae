@@ -1,0 +1,62 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// rotate.ae — port of examples/rotate/main.go: an image spinning about its
+// center (1 degree per tick), drawn with GeoM translate→rotate→translate.
+// The Go original decodes gophers.jpg; no JPEG decoder here (yet), so the
+// ebiten.png logo asset is used, scaled 4x.
+//
+// Run from the repo root (asset path is root-relative):
+//   DISPLAY=:0 ./target/build/examples/rotate/bin/rotate
+
+import ebiten
+import ebiten.core
+import ebiten.png
+import std.math
+
+extern println(s: string)
+extern exit(code: int)
+
+const SCREEN_W: int = 640
+const SCREEN_H: int = 480
+const PI: float = 3.14159265358979
+
+main() {
+    img = png.png_load("examples/resources/images/ebiten.png")
+    if img == null {
+        println("rotate: cannot load examples/resources/images/ebiten.png (run from the repo root)")
+        exit(1)
+    }
+    sw = core.image_w(img)
+    sh = core.image_h(img)
+    e = ebiten.game_new(SCREEN_W, SCREEN_H)
+    ebiten.on_update(e) callback { }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        core.image_fill(screen, 32, 32, 48, 255)
+        o = core.opts_new()
+        g = core.opts_geom(o)
+        // center to origin (at 4x), rotate by tick degrees, recenter
+        core.geom_scale(g, 4.0, 4.0)
+        core.geom_translate(g, 0.0 - sw * 2.0, 0.0 - sh * 2.0)
+        deg = ebiten.tick_count(e) % 360
+        core.geom_rotate(g, deg * 2.0 * PI / 360.0)
+        core.geom_translate(g, SCREEN_W / 2.0, SCREEN_H / 2.0)
+        core.opts_set_filter(o, core.FILTER_LINEAR)
+        core.draw_image(screen, img, o)
+        core.opts_free(o)
+        ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+    }
+    ebiten.run(e, "Rotate (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+}

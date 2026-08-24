@@ -1,0 +1,116 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ebitenui — consumer-local aeb library module for building the Aether port
+// of Ebiten against a sibling aether-ui checkout.
+//
+// Mirrors aether-ui's build_support/aetherui ui_backend builder (the ~50-line
+// per-platform backend-link block), with one difference: the aether-ui repo
+// root is the SIBLING checkout (../aether-ui relative to this repo), or
+// $AETHER_UI_ROOT when set.
+//
+//   aether.program(b) {
+//       source("../../<app>.ae")
+//       output("<app>")
+//       no_closure_regen()
+//       ebiten_backend(root)        // root = this (ebiten) repo's root
+//   }
+
+import std.string
+import std.os (platform, os_getenv)
+import aether
+import aether (extra_source, link_flag, include_dir)
+
+// The Aether SDK prefix (see aether-ui build_support for the rationale).
+sdk_prefix() -> string {
+    p = os_getenv("AETHER_UI_SDK_PREFIX")
+    if p != null {
+        if string.length(p) > 0 { return p }
+    }
+    return "/usr/local"
+}
+
+// The aether-ui checkout that supplies the ui/vg modules and native backends.
+aui_root(root: string) -> string {
+    p = os_getenv("AETHER_UI_ROOT")
+    if p != null {
+        if string.length(p) > 0 { return p }
+    }
+    return "${root}/../aether-ui"
+}
+
+builder ebiten_backend(root: string) {
+    sdk = sdk_prefix()
+    aui = aui_root(root)
+    // The port's C pixel substrate (blit/fill inner loops).
+    extra_source("${root}/ebiten/aether_ebiten_blit.c")
+    include_dir("${sdk}/include/aether/runtime")
+    include_dir("${sdk}/include/aether/runtime/actors")
+    include_dir("${sdk}/include/aether/std")
+    include_dir("${sdk}/include/aether/std/collections")
+    link_flag("-L${sdk}/lib/aether")
+    link_flag("-laether")
+    link_flag("-pthread")
+    link_flag("-lm")
+    link_flag("$(ae cflags --libs 2>/dev/null)")
+
+    os_name = platform()
+    if string.equals(os_name, "linux") == 1 {
+        extra_source("${aui}/backend/aether_ui_gtk4.c")
+        extra_source("${aui}/backend/aether_ui_test_server.c")
+        extra_source("${aui}/backend/aether_ui_system_extras.c")
+        extra_source("${aui}/backend/aether_ui_sni.c")
+        link_flag("$(pkg-config --cflags gtk4)")
+        link_flag("$(pkg-config --libs gtk4)")
+    }
+    if string.equals(os_name, "freebsd") == 1 {
+        extra_source("${aui}/backend/aether_ui_gtk4.c")
+        extra_source("${aui}/backend/aether_ui_test_server.c")
+        extra_source("${aui}/backend/aether_ui_system_extras.c")
+        extra_source("${aui}/backend/aether_ui_sni.c")
+        link_flag("$(pkg-config --cflags gtk4)")
+        link_flag("$(pkg-config --libs gtk4)")
+    }
+    if string.equals(os_name, "darwin") == 1 {
+        extra_source("${aui}/backend/aether_ui_macos.m")
+        extra_source("${aui}/backend/aether_ui_test_server.c")
+        extra_source("${aui}/backend/aether_ui_system_extras.c")
+        link_flag("-fobjc-arc")
+        link_flag("-framework AppKit")
+        link_flag("-framework Foundation")
+        link_flag("-framework QuartzCore")
+        link_flag("-framework CoreText")
+        link_flag("-framework ImageIO")
+    }
+    if string.equals(os_name, "windows") == 1 {
+        extra_source("${aui}/backend/aether_ui_win32.c")
+        extra_source("${aui}/backend/aether_ui_test_server.c")
+        extra_source("${aui}/backend/aether_ui_system_extras.c")
+        link_flag("-luser32")
+        link_flag("-lgdi32")
+        link_flag("-lgdiplus")
+        link_flag("-lmsimg32")
+        link_flag("-lcomctl32")
+        link_flag("-lcomdlg32")
+        link_flag("-lshell32")
+        link_flag("-lole32")
+        link_flag("-loleaut32")
+        link_flag("-luuid")
+        link_flag("-ldwmapi")
+        link_flag("-luxtheme")
+        link_flag("-lws2_32")
+        link_flag("-lbcrypt")
+        link_flag("-ldbghelp")
+    }
+}

@@ -1,0 +1,19 @@
+// spike — Ebiten→Aether port build spike, as its own cached aeb node.
+import build
+import aether
+import aether (source, output, no_closure_regen, lib)
+import build_support.ebitenui (ebiten_backend)
+
+main() {
+    b = build.start()
+    root = build._get(b, "root")
+    aether.program(b) {
+        source("spike.ae")
+        output("spike")
+        lib("${root}/../aether-ui")
+        lib("${root}")
+        no_closure_regen()
+        ebiten_backend(root)
+    }
+    return 0
+}

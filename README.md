@@ -1,71 +1,70 @@
-# Ebitengine (v2)
+# Ebiten, in Aether
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/hajimehoshi/ebiten/v2.svg)](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2)
-[![Build Status](https://github.com/hajimehoshi/ebiten/actions/workflows/test.yml/badge.svg)](https://github.com/hajimehoshi/ebiten/actions?query=workflow%3Atest)
+An [Aether](https://github.com/aether-lang-dev/aether)-language port of
+[Ebitengine](https://ebitengine.org) ("Ebiten"), Hajime Hoshi's 2D game
+engine — rendering through
+[aether-ui](https://github.com/aether-lang-dev/aether-ui) (GTK4 / AppKit /
+Win32) instead of the original GLFW + OpenGL/Metal/DirectX stack.
 
-**A dead simple 2D game engine for Go**
+The original Go implementation is preserved intact on the
+[`legacy_golang`](../../tree/legacy_golang) branch and serves as the porting
+oracle. Architecture, status table, and what is/isn't ported:
+[`AE-MIGRATION.md`](AE-MIGRATION.md). License: Apache 2.0, portions copyright
+Hajime Hoshi and The Ebiten Authors — see [`NOTICE.md`](NOTICE.md).
 
-Ebitengine (formerly known as Ebiten) is an open source game engine for the Go programming language. Ebitengine's simple API allows you to quickly and easily develop 2D games that can be deployed across multiple platforms.
+## Layout
 
-* [Website (ebitengine.org)](https://ebitengine.org)
-* [API Reference](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2)
-* [Cheat Sheet](https://ebitengine.org/en/documents/cheatsheet.html)
-* [Awesome Ebitengine](https://github.com/sedyh/awesome-ebitengine)
+- `ebiten/core.ae` — pure drawing core: GeoM, ColorScale, ColorM, blend
+  table, Image + DrawImage/DrawTriangles. Headless, no ui dependency.
+- `ebiten/aether_ebiten_blit.c` — the per-pixel inner loops (C substrate).
+- `ebiten/png.ae` — PNG decoder (std.zlib inflate).
+- `ebiten/util.ae` — ebitenutil: DebugPrint bitmap font (embedded), scaled text.
+- `ebiten/vector.ae` — vector: primitives + scanline path fill.
+- `ebiten/audio.ae` — audio players over std.audio.
+- `ebiten/module.ae` — the engine (`import ebiten`): game loop, input,
+  window/canvas present.
+- `examples/<name>/` — ported examples, one aeb node each
+  (`examples/resources/` keeps the original assets).
+- `tests/` — headless unit tests.
 
-![Overview](https://ebitengine.org/images/overview2.png)
+## Build & run
 
-## Platforms
+```sh
+aeb all.ae                    # build everything
+aeb examples/snake            # or one example
+./target/build/examples/snake/bin/snake
 
-* [Windows](https://ebitengine.org/en/documents/install.html?os=windows)
-* [macOS](https://ebitengine.org/en/documents/install.html?os=darwin)
-* [Linux](https://ebitengine.org/en/documents/install.html?os=linux)
-* [FreeBSD](https://ebitengine.org/en/documents/install.html?os=freebsd)
-* [Android](https://ebitengine.org/en/documents/mobile.html) (Cgo required)
-* [iOS](https://ebitengine.org/en/documents/mobile.html) (Cgo required)
-* [WebAssembly](https://ebitengine.org/en/documents/webassembly.html)
-* Nintendo Switch (Cgo required)
-* Xbox (Cgo required) (Xbox support is limited and not available to everyone. Negotiations are currently underway to make it accessible to all.)
+# tests (headless, from the repo root):
+ae run --extra ebiten/aether_ebiten_blit.c tests/test_core.ae
 
-For installation on desktops, see [the installation instruction](https://ebitengine.org/en/documents/install.html).
+./ci.sh                       # the whole gate: tests + builds + driver smoke
+```
 
-## Features
+Needs a sibling `../aether-ui` checkout (or `AETHER_UI_ROOT`) at or after
+commit `ad960a8` (`canvas_on_key_release` + `canvas_draw_image_scaled_ptr`).
 
-* 2D Graphics (Geometry and color transformation by matrices, Various composition modes, Offscreen rendering, Text rendering, Automatic batches, Automatic texture atlas, Custom shaders)
-* Input (Mouse, Keyboard, Gamepads, Touches)
-* Audio (Ogg/Vorbis, MP3, WAV, PCM)
+## Writing a game
 
-## Packages
+```aether
+import ebiten
+import ebiten.core
 
-* [ebiten](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2)
-  * [audio](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/audio)
-    * [mp3](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/audio/mp3)
-    * [vorbis](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/audio/vorbis)
-    * [wav](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/audio/wav)
-  * [colorm](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/colorm)
-  * [ebitenutil](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/ebitenutil)
-  * [inpututil](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/inpututil)
-  * [mobile](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/mobile)
-  * [text/v2](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/text/v2)
-  * [vector](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/vector)
-  * [exp/shaderprecomp](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/exp/shaderprecomp)
-  * [exp/textinput](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/exp/textinput)
-  * [exp/vmhost](https://pkg.go.dev/github.com/hajimehoshi/ebiten/v2/exp/vmhost)
+main() {
+    e = ebiten.game_new(320, 240)          // logical size
+    ebiten.set_scale(e, 2.0)               // optional window upscale
+    ebiten.on_update(e) callback {          // 60 TPS fixed step
+        if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { ... }
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {   // per frame
+        core.image_fill(screen, 0, 0, 0, 255)
+        core.draw_image(screen, sprite, opts)
+        ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+    }
+    ebiten.run(e, "Title", 660, 520)       // blocks until close
+}
+```
 
-## AI coding agents
-
-If you use an AI coding agent to write or modify Ebitengine code or applications, point it at the [`skills`](skills) directory, which holds skills for working with this repository.
-
-## Community
-
-- [Discord](https://discord.gg/3tVdM5H8cC)
-- `#ebitengine` channel in [Gophers Slack](https://blog.gopheracademy.com/gophers-slack-community/)
-- [GitHub Discussion](https://github.com/hajimehoshi/ebiten/discussions)
-- [`r/ebitengine` in Reddit](https://www.reddit.com/r/ebitengine/)
-
-## License
-
-Ebitengine is licensed under Apache license version 2.0. See [LICENSE](LICENSE) file.
-
-[The Ebitengine logo](https://ebitengine.org/images/logo.png) by Hajime Hoshi is licensed under [the Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
-
-Ebitengine bundles third-party libraries. See [NOTICE.md](NOTICE.md) for their licenses.
+Driver testing: run with `AETHER_UI_TEST_PORT=<port>` and use the standard
+AetherUIDriver routes — `POST /canvas/1/key?name=Left`, `/keyup`, `/click`,
+`/move`, `/release`, `GET /screenshot`, `POST /shutdown`. A driver-injected
+key press must span an engine tick (sleep ~20ms between key and keyup).

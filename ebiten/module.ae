@@ -1,0 +1,491 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ae/ebiten/module.ae — the Ebiten→Aether engine (`import ebiten`).
+//
+// Owns what run.go / gameforui.go / internal/clock / internal/inputstate did:
+// the fixed-TPS game loop, the input state table, and the screen present —
+// over an aether-ui window + canvas instead of GLFW + GPU.
+//
+//   e = ebiten.game_new(320, 240)
+//   ebiten.on_update(e) callback { ... }            // 60 TPS, fixed step
+//   ebiten.on_draw(e) callback |screen: ptr| { ... } // per frame; screen is a
+//                                                    // ebiten.core image handle
+//   ebiten.run(e, "title", 340, 280)                 // blocks
+//
+// Input queries (valid inside update): is_key_pressed(e, ebiten.KEY_LEFT) etc.
+// Key press/release arrive from canvas_on_key / canvas_on_key_release; "just
+// pressed/released" are per-tick snapshots, Ebiten's inpututil semantics.
+
+exports (
+    game_new, on_update, on_draw, run, screen_of, set_scale,
+    debug_print, debug_print_at, actual_fps,
+    is_key_pressed, is_key_just_pressed, is_key_just_released,
+    cursor_x, cursor_y,
+    is_mouse_button_pressed, is_mouse_button_just_pressed,
+    is_mouse_button_just_released,
+    wheel_x, wheel_y, tick_count,
+    key_code,
+    KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I, KEY_J,
+    KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R, KEY_S, KEY_T,
+    KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z,
+    KEY_0, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9,
+    KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN,
+    KEY_SPACE, KEY_ENTER, KEY_ESCAPE, KEY_TAB, KEY_BACKSPACE,
+    KEY_SHIFT_LEFT, KEY_SHIFT_RIGHT, KEY_CONTROL_LEFT, KEY_CONTROL_RIGHT,
+    KEY_ALT_LEFT, KEY_ALT_RIGHT,
+    KEY_MINUS, KEY_EQUAL, KEY_COMMA, KEY_PERIOD, KEY_SLASH,
+    KEY_SEMICOLON, KEY_QUOTE, KEY_BRACKET_LEFT, KEY_BRACKET_RIGHT,
+    KEY_BACKSLASH, KEY_BACKQUOTE,
+    KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6,
+    KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+    MOUSE_BUTTON_LEFT
+)
+
+import ui
+import ui (window, enable_test_server)
+import ebiten.core
+import ebiten.util
+import std.string
+import std.mem
+import std.os
+import std.os (os_getenv)
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+extern free(p: ptr)
+extern lrint(x: float) -> long
+extern string_char_at(s: string, index: int) -> int
+
+// ─── key codes ───────────────────────────────────────────────────────────────
+
+const KEY_A: int = 0
+const KEY_B: int = 1
+const KEY_C: int = 2
+const KEY_D: int = 3
+const KEY_E: int = 4
+const KEY_F: int = 5
+const KEY_G: int = 6
+const KEY_H: int = 7
+const KEY_I: int = 8
+const KEY_J: int = 9
+const KEY_K: int = 10
+const KEY_L: int = 11
+const KEY_M: int = 12
+const KEY_N: int = 13
+const KEY_O: int = 14
+const KEY_P: int = 15
+const KEY_Q: int = 16
+const KEY_R: int = 17
+const KEY_S: int = 18
+const KEY_T: int = 19
+const KEY_U: int = 20
+const KEY_V: int = 21
+const KEY_W: int = 22
+const KEY_X: int = 23
+const KEY_Y: int = 24
+const KEY_Z: int = 25
+const KEY_0: int = 26
+const KEY_1: int = 27
+const KEY_2: int = 28
+const KEY_3: int = 29
+const KEY_4: int = 30
+const KEY_5: int = 31
+const KEY_6: int = 32
+const KEY_7: int = 33
+const KEY_8: int = 34
+const KEY_9: int = 35
+const KEY_LEFT: int = 36
+const KEY_RIGHT: int = 37
+const KEY_UP: int = 38
+const KEY_DOWN: int = 39
+const KEY_SPACE: int = 40
+const KEY_ENTER: int = 41
+const KEY_ESCAPE: int = 42
+const KEY_TAB: int = 43
+const KEY_BACKSPACE: int = 44
+const KEY_SHIFT_LEFT: int = 45
+const KEY_SHIFT_RIGHT: int = 46
+const KEY_CONTROL_LEFT: int = 47
+const KEY_CONTROL_RIGHT: int = 48
+const KEY_ALT_LEFT: int = 49
+const KEY_ALT_RIGHT: int = 50
+const KEY_MINUS: int = 51
+const KEY_EQUAL: int = 52
+const KEY_COMMA: int = 53
+const KEY_PERIOD: int = 54
+const KEY_SLASH: int = 55
+const KEY_SEMICOLON: int = 56
+const KEY_QUOTE: int = 57
+const KEY_BRACKET_LEFT: int = 58
+const KEY_BRACKET_RIGHT: int = 59
+const KEY_BACKSLASH: int = 60
+const KEY_BACKQUOTE: int = 61
+const KEY_F1: int = 62
+const KEY_F2: int = 63
+const KEY_F3: int = 64
+const KEY_F4: int = 65
+const KEY_F5: int = 66
+const KEY_F6: int = 67
+const KEY_F7: int = 68
+const KEY_F8: int = 69
+const KEY_F9: int = 70
+const KEY_F10: int = 71
+const KEY_F11: int = 72
+const KEY_F12: int = 73
+const KEY_MAX: int = 80
+
+const MOUSE_BUTTON_LEFT: int = 0
+
+const TICK_MS: float = 16.6666666667
+const MAX_CATCHUP_TICKS: int = 5
+
+// GDK/platform key NAME → key code; -1 for unmapped keys.
+key_code(name: string) -> int {
+    n = string.length(name)
+    if n == 1 {
+        c = string_char_at(name, 0)
+        if c < 0 { c = c + 256 }
+        if c >= 97 && c <= 122 { return c - 97 }
+        if c >= 65 && c <= 90 { return c - 65 }
+        if c >= 48 && c <= 57 { return KEY_0 + (c - 48) }
+        return 0 - 1
+    }
+    if string.equals(name, "Left") == 1 { return KEY_LEFT }
+    if string.equals(name, "Right") == 1 { return KEY_RIGHT }
+    if string.equals(name, "Up") == 1 { return KEY_UP }
+    if string.equals(name, "Down") == 1 { return KEY_DOWN }
+    if string.equals(name, "space") == 1 { return KEY_SPACE }
+    if string.equals(name, "Return") == 1 { return KEY_ENTER }
+    if string.equals(name, "KP_Enter") == 1 { return KEY_ENTER }
+    if string.equals(name, "Escape") == 1 { return KEY_ESCAPE }
+    if string.equals(name, "Tab") == 1 { return KEY_TAB }
+    if string.equals(name, "BackSpace") == 1 { return KEY_BACKSPACE }
+    if string.equals(name, "Shift_L") == 1 { return KEY_SHIFT_LEFT }
+    if string.equals(name, "Shift_R") == 1 { return KEY_SHIFT_RIGHT }
+    if string.equals(name, "Control_L") == 1 { return KEY_CONTROL_LEFT }
+    if string.equals(name, "Control_R") == 1 { return KEY_CONTROL_RIGHT }
+    if string.equals(name, "Alt_L") == 1 { return KEY_ALT_LEFT }
+    if string.equals(name, "Alt_R") == 1 { return KEY_ALT_RIGHT }
+    if string.equals(name, "minus") == 1 { return KEY_MINUS }
+    if string.equals(name, "equal") == 1 { return KEY_EQUAL }
+    if string.equals(name, "comma") == 1 { return KEY_COMMA }
+    if string.equals(name, "period") == 1 { return KEY_PERIOD }
+    if string.equals(name, "slash") == 1 { return KEY_SLASH }
+    if string.equals(name, "semicolon") == 1 { return KEY_SEMICOLON }
+    if string.equals(name, "apostrophe") == 1 { return KEY_QUOTE }
+    if string.equals(name, "bracketleft") == 1 { return KEY_BRACKET_LEFT }
+    if string.equals(name, "bracketright") == 1 { return KEY_BRACKET_RIGHT }
+    if string.equals(name, "backslash") == 1 { return KEY_BACKSLASH }
+    if string.equals(name, "grave") == 1 { return KEY_BACKQUOTE }
+    if string.equals(name, "F1") == 1 { return KEY_F1 }
+    if string.equals(name, "F2") == 1 { return KEY_F2 }
+    if string.equals(name, "F3") == 1 { return KEY_F3 }
+    if string.equals(name, "F4") == 1 { return KEY_F4 }
+    if string.equals(name, "F5") == 1 { return KEY_F5 }
+    if string.equals(name, "F6") == 1 { return KEY_F6 }
+    if string.equals(name, "F7") == 1 { return KEY_F7 }
+    if string.equals(name, "F8") == 1 { return KEY_F8 }
+    if string.equals(name, "F9") == 1 { return KEY_F9 }
+    if string.equals(name, "F10") == 1 { return KEY_F10 }
+    if string.equals(name, "F11") == 1 { return KEY_F11 }
+    if string.equals(name, "F12") == 1 { return KEY_F12 }
+    return 0 - 1
+}
+
+// ─── engine ──────────────────────────────────────────────────────────────────
+
+struct Engine {
+    logical_w: int
+    logical_h: int
+    screen: ptr
+    update_fn: ptr
+    draw_fn: ptr
+    canvas: int
+    keys_now: ptr
+    keys_tick: ptr
+    keys_prev: ptr
+    mouse_x: float
+    mouse_y: float
+    mouse_now: int
+    mouse_tick: int
+    mouse_prev: int
+    wheel_ax: float
+    wheel_ay: float
+    wheel_tx: float
+    wheel_ty: float
+    last_ms: long
+    acc: float
+    ticks: long
+    debug_font: ptr
+    fps_frames: int
+    fps_win_start: long
+    fps_val: float
+    scale: float
+}
+
+game_new(logical_w: int, logical_h: int) -> ptr {
+    e = calloc(1, 256) as *Engine
+    e.logical_w = logical_w
+    e.logical_h = logical_h
+    e.screen = core.image_new(logical_w, logical_h)
+    e.update_fn = null
+    e.draw_fn = null
+    e.canvas = 0
+    e.keys_now = calloc(KEY_MAX, 1)
+    e.keys_tick = calloc(KEY_MAX, 1)
+    e.keys_prev = calloc(KEY_MAX, 1)
+    e.scale = 1.0
+    return e as ptr
+}
+
+// Integer-or-fractional upscale of the logical framebuffer to the canvas
+// (SetWindowSize's role). Call before run(); cursor coords are unscaled back.
+set_scale(ep: ptr, s: float) {
+    e = ep as *Engine
+    if s > 0.0 { e.scale = s }
+}
+
+// The screen image handle (a ebiten.core image) — also passed to on_draw.
+screen_of(ep: ptr) -> ptr {
+    e = ep as *Engine
+    return e.screen
+}
+
+on_update(ep: ptr, cb: fn) {
+    e = ep as *Engine
+    e.update_fn = cb
+}
+
+on_draw(ep: ptr, cb: fn) {
+    e = ep as *Engine
+    e.draw_fn = cb
+}
+
+// ─── input events (canvas → live state) ──────────────────────────────────────
+
+key_event(ep: ptr, name: string, down: int) {
+    e = ep as *Engine
+    code = key_code(name)
+    if code < 0 { return }
+    mem.set_byte(e.keys_now, code, down)
+}
+
+mouse_button_event(ep: ptr, x: float, y: float, down: int) {
+    e = ep as *Engine
+    e.mouse_x = x / e.scale
+    e.mouse_y = y / e.scale
+    e.mouse_now = down
+}
+
+mouse_move_event(ep: ptr, x: float, y: float) {
+    e = ep as *Engine
+    e.mouse_x = x / e.scale
+    e.mouse_y = y / e.scale
+}
+
+scroll_event(ep: ptr, dx: float, dy: float) {
+    e = ep as *Engine
+    e.wheel_ax = e.wheel_ax + dx
+    e.wheel_ay = e.wheel_ay + dy
+}
+
+// ─── per-tick input snapshot (Ebiten's inpututil semantics) ──────────────────
+
+begin_tick(e: *Engine) {
+    i = 0
+    while i < KEY_MAX {
+        mem.set_byte(e.keys_prev, i, mem.get_byte(e.keys_tick, i))
+        mem.set_byte(e.keys_tick, i, mem.get_byte(e.keys_now, i))
+        i = i + 1
+    }
+    e.mouse_prev = e.mouse_tick
+    e.mouse_tick = e.mouse_now
+    e.wheel_tx = e.wheel_ax
+    e.wheel_ty = e.wheel_ay
+    e.wheel_ax = 0.0
+    e.wheel_ay = 0.0
+}
+
+// ─── input queries (read the tick snapshot; valid inside update) ─────────────
+
+is_key_pressed(ep: ptr, code: int) -> int {
+    e = ep as *Engine
+    if code < 0 || code >= KEY_MAX { return 0 }
+    return mem.get_byte(e.keys_tick, code)
+}
+
+is_key_just_pressed(ep: ptr, code: int) -> int {
+    e = ep as *Engine
+    if code < 0 || code >= KEY_MAX { return 0 }
+    if mem.get_byte(e.keys_tick, code) == 1 && mem.get_byte(e.keys_prev, code) == 0 {
+        return 1
+    }
+    return 0
+}
+
+is_key_just_released(ep: ptr, code: int) -> int {
+    e = ep as *Engine
+    if code < 0 || code >= KEY_MAX { return 0 }
+    if mem.get_byte(e.keys_tick, code) == 0 && mem.get_byte(e.keys_prev, code) == 1 {
+        return 1
+    }
+    return 0
+}
+
+cursor_x(ep: ptr) -> float {
+    e = ep as *Engine
+    return e.mouse_x
+}
+
+cursor_y(ep: ptr) -> float {
+    e = ep as *Engine
+    return e.mouse_y
+}
+
+is_mouse_button_pressed(ep: ptr, btn: int) -> int {
+    e = ep as *Engine
+    if btn != MOUSE_BUTTON_LEFT { return 0 }
+    return e.mouse_tick
+}
+
+is_mouse_button_just_pressed(ep: ptr, btn: int) -> int {
+    e = ep as *Engine
+    if btn != MOUSE_BUTTON_LEFT { return 0 }
+    if e.mouse_tick == 1 && e.mouse_prev == 0 { return 1 }
+    return 0
+}
+
+is_mouse_button_just_released(ep: ptr, btn: int) -> int {
+    e = ep as *Engine
+    if btn != MOUSE_BUTTON_LEFT { return 0 }
+    if e.mouse_tick == 0 && e.mouse_prev == 1 { return 1 }
+    return 0
+}
+
+wheel_x(ep: ptr) -> float {
+    e = ep as *Engine
+    return e.wheel_tx
+}
+
+wheel_y(ep: ptr) -> float {
+    e = ep as *Engine
+    return e.wheel_ty
+}
+
+tick_count(ep: ptr) -> long {
+    e = ep as *Engine
+    return e.ticks
+}
+
+// ─── DebugPrint (ebitenutil semantics; font sheet lazy-decoded once) ─────────
+
+debug_print_at(ep: ptr, dst: ptr, str: string, x: int, y: int) {
+    e = ep as *Engine
+    if e.debug_font == null { e.debug_font = util.debug_font_new() }
+    util.debug_print_at(e.debug_font, dst, str, x, y)
+}
+
+debug_print(ep: ptr, dst: ptr, str: string) {
+    debug_print_at(ep, dst, str, 0, 0)
+}
+
+// ─── the frame loop ──────────────────────────────────────────────────────────
+
+call_update(cb: fn) { cb() }
+call_draw(cb: fn, screen: ptr) { cb(screen) }
+
+// Rendered frames per second over the last ~1s window (ActualFPS).
+actual_fps(ep: ptr) -> float {
+    e = ep as *Engine
+    return e.fps_val
+}
+
+frame(ep: ptr) {
+    e = ep as *Engine
+    now = os.now_monotonic_ms()
+    if e.last_ms == 0 { e.last_ms = now }
+    if e.fps_win_start == 0 { e.fps_win_start = now }
+    e.fps_frames = e.fps_frames + 1
+    span = now - e.fps_win_start
+    if span >= 1000 {
+        e.fps_val = e.fps_frames * 1000.0 / (span * 1.0)
+        e.fps_frames = 0
+        e.fps_win_start = now
+    }
+    e.acc = e.acc + (now - e.last_ms) * 1.0
+    e.last_ms = now
+    steps = 0
+    while e.acc >= TICK_MS && steps < MAX_CATCHUP_TICKS {
+        begin_tick(e)
+        if e.update_fn != null { call_update(e.update_fn) }
+        e.acc = e.acc - TICK_MS
+        e.ticks = e.ticks + 1
+        steps = steps + 1
+    }
+    // A stall longer than the catch-up budget drops the backlog (Ebiten's
+    // clock does the same) rather than spiralling.
+    if e.acc >= TICK_MS { e.acc = 0.0 }
+    if e.draw_fn != null { call_draw(e.draw_fn, e.screen) }
+    present(e)
+}
+
+present(e: *Engine) {
+    c = e.canvas
+    if c == 0 { return }
+    ui.canvas_clear(c)
+    if e.scale == 1.0 {
+        ui.canvas_draw_image_ptr(c, 0.0, 0.0, e.logical_w, e.logical_h,
+            core.image_pix_ptr(e.screen), e.logical_w * e.logical_h * 4)
+    } else {
+        ui.canvas_draw_image_scaled_ptr(c, 0.0, 0.0,
+            e.logical_w * e.scale, e.logical_h * e.scale,
+            e.logical_w, e.logical_h,
+            core.image_pix_ptr(e.screen), e.logical_w * e.logical_h * 4)
+    }
+    ui.canvas_redraw(c)
+}
+
+// Run the game: opens the window, wires input, starts the ~60Hz frame timer,
+// and blocks until the window closes. Register on_update/on_draw first.
+// win_w/win_h size the window; the canvas is the logical size, 1:1.
+run(ep: ptr, title: string, win_w: int, win_h: int) {
+    e = ep as *Engine
+    window(title, win_w, win_h) {
+        c = ui.canvas_create(lrint(e.logical_w * e.scale), lrint(e.logical_h * e.scale))
+        e.canvas = c
+        ui.canvas_on_key(c) callback |k: string| { key_event(ep, k, 1) }
+        ui.canvas_on_key_release(c) callback |k: string| { key_event(ep, k, 0) }
+        ui.canvas_on_click(c) callback |x: float, y: float| {
+            mouse_button_event(ep, x, y, 1)
+        }
+        ui.canvas_on_release(c) callback |x: float, y: float| {
+            mouse_button_event(ep, x, y, 0)
+        }
+        ui.canvas_on_move(c) callback |x: float, y: float| {
+            mouse_move_event(ep, x, y)
+        }
+        ui.canvas_on_scroll(c) callback |dx: float, dy: float| {
+            scroll_event(ep, dx, dy)
+        }
+        ui.timer(16) callback { frame(ep) }
+        tp = os_getenv("AETHER_UI_TEST_PORT")
+        if tp != null {
+            port = string.string_get_int(tp)
+            if port <= 0 { port = 9222 }
+            enable_test_server(port)
+        }
+    }
+}

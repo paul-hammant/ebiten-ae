@@ -1,0 +1,291 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ae/ebiten/png.ae — minimal PNG decoder for asset loading (replaces
+// internal/png's role for the port; not a full codec).
+//
+// Supports: 8-bit depth, color types 0 (gray), 2 (RGB), 3 (palette, with
+// optional tRNS), 4 (gray+alpha), 6 (RGBA); all five scanline filters;
+// non-interlaced only. CRCs are not verified (assets are trusted local
+// files). Output is an ebiten.core image handle (straight RGBA8888).
+//
+// IDAT inflation goes through std.zlib; file reading through std.fs's
+// binary split-accessor pair.
+
+exports (
+    png_decode, png_load
+)
+
+import ebiten.core
+import std.mem
+import std.zlib
+import std.fs
+import std.bytes
+
+extern malloc(size: int) -> ptr
+extern free(p: ptr)
+
+// big-endian u32 at offset (as int; PNG dims are < 2^31)
+be32(p: ptr, off: int) -> int {
+    v = mem.get_byte(p, off)
+    v = v * 256 + mem.get_byte(p, off + 1)
+    v = v * 256 + mem.get_byte(p, off + 2)
+    v = v * 256 + mem.get_byte(p, off + 3)
+    return v
+}
+
+abs_i(v: int) -> int {
+    if v < 0 { return 0 - v }
+    return v
+}
+
+// Paeth predictor (PNG spec 9.4).
+paeth(a: int, b: int, c: int) -> int {
+    pp = a + b - c
+    pa = abs_i(pp - a)
+    pb = abs_i(pp - b)
+    pc = abs_i(pp - c)
+    if pa <= pb && pa <= pc { return a }
+    if pb <= pc { return b }
+    return c
+}
+
+// Decode a PNG byte buffer into a new core image. Returns null on any
+// unsupported/corrupt input.
+png_decode(data: ptr, data_len: int) -> ptr {
+    if data == null || data_len < 45 { return null }
+    // signature 137 80 78 71 13 10 26 10
+    if mem.get_byte(data, 0) != 137 { return null }
+    if mem.get_byte(data, 1) != 80 { return null }
+    if mem.get_byte(data, 2) != 78 { return null }
+    if mem.get_byte(data, 3) != 71 { return null }
+
+    w = 0
+    h = 0
+    depth = 0
+    color = 0
+    interlace = 0
+    plte = null
+    plte_n = 0
+    trns = null
+    trns_n = 0
+    idat_total = 0
+
+    // Pass 1: sizes + header fields.
+    off = 8
+    while off + 12 <= data_len {
+        clen = be32(data, off)
+        t0 = mem.get_byte(data, off + 4)
+        t1 = mem.get_byte(data, off + 5)
+        t2 = mem.get_byte(data, off + 6)
+        t3 = mem.get_byte(data, off + 7)
+        body = off + 8
+        if t0 == 73 && t1 == 72 && t2 == 68 && t3 == 82 {
+            // IHDR
+            w = be32(data, body)
+            h = be32(data, body + 4)
+            depth = mem.get_byte(data, body + 8)
+            color = mem.get_byte(data, body + 9)
+            interlace = mem.get_byte(data, body + 12)
+        }
+        if t0 == 73 && t1 == 68 && t2 == 65 && t3 == 84 {
+            // IDAT
+            idat_total = idat_total + clen
+        }
+        if t0 == 73 && t1 == 69 && t2 == 78 && t3 == 68 { off = data_len }
+        off = off + 12 + clen
+    }
+
+    if w <= 0 || h <= 0 { return null }
+    if depth != 8 { return null }
+    if interlace != 0 { return null }
+    channels = 0
+    if color == 0 { channels = 1 }
+    if color == 2 { channels = 3 }
+    if color == 3 { channels = 1 }
+    if color == 4 { channels = 2 }
+    if color == 6 { channels = 4 }
+    if channels == 0 { return null }
+    if idat_total == 0 { return null }
+
+    // Pass 2: collect PLTE/tRNS, concatenate IDAT.
+    idat_b = bytes.new(idat_total)
+    idat = bytes.data(idat_b)
+    idat_off = 0
+    off = 8
+    while off + 12 <= data_len {
+        clen = be32(data, off)
+        t0 = mem.get_byte(data, off + 4)
+        t1 = mem.get_byte(data, off + 5)
+        t2 = mem.get_byte(data, off + 6)
+        t3 = mem.get_byte(data, off + 7)
+        body = off + 8
+        if t0 == 80 && t1 == 76 && t2 == 84 && t3 == 69 {
+            // PLTE
+            plte = malloc(clen)
+            plte_n = clen / 3
+            i = 0
+            while i < clen {
+                mem.set_byte(plte, i, mem.get_byte(data, body + i))
+                i = i + 1
+            }
+        }
+        if t0 == 116 && t1 == 82 && t2 == 78 && t3 == 83 {
+            // tRNS (palette form only)
+            trns = malloc(clen)
+            trns_n = clen
+            i = 0
+            while i < clen {
+                mem.set_byte(trns, i, mem.get_byte(data, body + i))
+                i = i + 1
+            }
+        }
+        if t0 == 73 && t1 == 68 && t2 == 65 && t3 == 84 {
+            i = 0
+            while i < clen {
+                mem.set_byte(idat, idat_off + i, mem.get_byte(data, body + i))
+                i = i + 1
+            }
+            idat_off = idat_off + clen
+        }
+        if t0 == 73 && t1 == 69 && t2 == 78 && t3 == 68 { off = data_len }
+        off = off + 12 + clen
+    }
+
+    // Inflate. bytes.finish consumes the buffer into a binary-safe string.
+    // (Direct writes through bytes.data() must be published via set_length.)
+    bytes.set_length(idat_b, idat_total)
+    idat_s = bytes.finish(idat_b, idat_total)
+    ok = zlib.zlib_try_inflate(idat_s, idat_total)
+    if ok != 1 {
+        if plte != null { free(plte) }
+        if trns != null { free(trns) }
+        return null
+    }
+    raw_len = zlib.zlib_get_inflate_length()
+    raw_s = zlib.zlib_get_inflate_bytes()
+    raw_b = bytes.new(raw_len)
+    _ = bytes.copy_from_string(raw_b, 0, raw_s, raw_len)
+    raw = bytes.data(raw_b)
+    zlib.zlib_release_inflate()
+    stride = w * channels
+    need = (stride + 1) * h
+    if raw_len < need {
+        bytes.free(raw_b)
+        if plte != null { free(plte) }
+        if trns != null { free(trns) }
+        return null
+    }
+
+    // Unfilter into `flat` (h * stride).
+    flat = malloc(h * stride)
+    bpp = channels
+    y = 0
+    while y < h {
+        row_in = y * (stride + 1)
+        ft = mem.get_byte(raw, row_in)
+        row_out = y * stride
+        prev_out = row_out - stride
+        x = 0
+        while x < stride {
+            v = mem.get_byte(raw, row_in + 1 + x)
+            left = 0
+            up = 0
+            ul = 0
+            if x >= bpp { left = mem.get_byte(flat, row_out + x - bpp) }
+            if y > 0 { up = mem.get_byte(flat, prev_out + x) }
+            if x >= bpp && y > 0 { ul = mem.get_byte(flat, prev_out + x - bpp) }
+            r = v
+            if ft == 1 { r = v + left }
+            if ft == 2 { r = v + up }
+            if ft == 3 { r = v + (left + up) / 2 }
+            if ft == 4 { r = v + paeth(left, up, ul) }
+            mem.set_byte(flat, row_out + x, r % 256)
+            x = x + 1
+        }
+        y = y + 1
+    }
+
+    // Convert to straight RGBA8888 in a core image.
+    img = core.image_new(w, h)
+    pix = core.image_pix_ptr(img)
+    y = 0
+    while y < h {
+        x = 0
+        while x < w {
+            si = y * stride + x * channels
+            di = (y * w + x) * 4
+            r = 0
+            g = 0
+            b = 0
+            a = 255
+            if color == 0 {
+                r = mem.get_byte(flat, si)
+                g = r
+                b = r
+            }
+            if color == 2 {
+                r = mem.get_byte(flat, si)
+                g = mem.get_byte(flat, si + 1)
+                b = mem.get_byte(flat, si + 2)
+            }
+            if color == 3 {
+                idx = mem.get_byte(flat, si)
+                if idx < plte_n {
+                    r = mem.get_byte(plte, idx * 3)
+                    g = mem.get_byte(plte, idx * 3 + 1)
+                    b = mem.get_byte(plte, idx * 3 + 2)
+                }
+                if idx < trns_n { a = mem.get_byte(trns, idx) }
+            }
+            if color == 4 {
+                r = mem.get_byte(flat, si)
+                g = r
+                b = r
+                a = mem.get_byte(flat, si + 1)
+            }
+            if color == 6 {
+                r = mem.get_byte(flat, si)
+                g = mem.get_byte(flat, si + 1)
+                b = mem.get_byte(flat, si + 2)
+                a = mem.get_byte(flat, si + 3)
+            }
+            mem.set_byte(pix, di, r)
+            mem.set_byte(pix, di + 1, g)
+            mem.set_byte(pix, di + 2, b)
+            mem.set_byte(pix, di + 3, a)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    free(flat)
+    bytes.free(raw_b)
+    if plte != null { free(plte) }
+    if trns != null { free(trns) }
+    return img
+}
+
+// Load a PNG file into a new core image; null on read/decode failure.
+png_load(path: string) -> ptr {
+    if fs.fs_try_read_binary(path) != 1 { return null }
+    n = fs.fs_get_read_binary_length()
+    data_s = fs.fs_get_read_binary()
+    db = bytes.new(n)
+    _ = bytes.copy_from_string(db, 0, data_s, n)
+    fs.fs_release_read_binary()
+    data = bytes.data(db)
+    img = png_decode(data, n)
+    bytes.free(db)
+    return img
+}

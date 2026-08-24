@@ -1,0 +1,1153 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ae/ebiten/core.ae — pure core of the Ebiten→Aether port.
+//
+// No aether-ui dependency: GeoM (geom.go), ColorScale (colorscale.go), the
+// blend factor/operation table (blend.go), and Image + the software DrawImage
+// blitter that replaces the GPU path (image.go's public semantics).
+//
+// Handle-based public surface: every struct crosses the module boundary as a
+// raw ptr (Aether struct types don't cross modules); functions cast internally.
+// Pixels are straight (non-premultiplied) RGBA8888 in memory — the form
+// aether-ui's canvas blit takes — and are lifted into premultiplied floats
+// inside the blitter, which is the domain Ebiten's ColorScale and blend
+// factors are defined over.
+
+exports (
+    FILTER_NEAREST, FILTER_LINEAR,
+    BLEND_SOURCE_OVER, BLEND_CLEAR, BLEND_COPY, BLEND_DESTINATION,
+    BLEND_DESTINATION_OVER, BLEND_SOURCE_IN, BLEND_DESTINATION_IN,
+    BLEND_SOURCE_OUT, BLEND_DESTINATION_OUT, BLEND_SOURCE_ATOP,
+    BLEND_DESTINATION_ATOP, BLEND_XOR, BLEND_LIGHTER,
+    geom_new, geom_free, geom_reset, geom_clone, geom_copy_from,
+    geom_apply_x, geom_apply_y, geom_element, geom_set_element,
+    geom_concat, geom_scale, geom_translate, geom_rotate, geom_skew,
+    geom_det, geom_is_invertible, geom_invert,
+    opts_new, opts_free, opts_reset, opts_geom,
+    opts_set_blend, opts_set_filter, opts_set_colorm,
+    colorm_new, colorm_free, colorm_reset, colorm_is_identity,
+    colorm_element, colorm_set_element, colorm_copy_from, colorm_clone,
+    colorm_scale, colorm_translate, colorm_concat,
+    colorm_rotate_hue, colorm_change_hsv, colorm_apply_chan,
+    opts_color_reset, opts_color_set, opts_color_scale, opts_color_scale_alpha,
+    opts_color_r, opts_color_g, opts_color_b, opts_color_a,
+    image_new, image_free, image_w, image_h,
+    image_bounds_x0, image_bounds_y0, image_bounds_x1, image_bounds_y1,
+    image_is_sub, image_sub, image_pix_ptr, image_stride,
+    image_fill, image_fill_rect, image_clear, image_set,
+    image_at_r, image_at_g, image_at_b, image_at_a,
+    image_read_pixels, image_write_pixels,
+    draw_image, draw_triangles, vertex_set
+)
+
+import std.math
+import std.mem
+
+extern calloc(n: int, size: int) -> ptr
+extern malloc(size: int) -> ptr
+extern free(p: ptr)
+extern lrint(x: float) -> long
+// Pixel inner loops (ae/ebiten/aether_ebiten_blit.c — see its header).
+extern aether_ebiten_fill_rect(dst: ptr, stride: int, x0: int, y0: int, x1: int, y1: int, r: int, g: int, b: int, a: int)
+extern aether_ebiten_blit(dst: ptr, dst_stride: int, src: ptr, src_stride: int, sx0: int, sy0: int, sw: int, sh: int, px0: int, py0: int, px1: int, py1: int, ia: float, ib: float, ic: float, id_v: float, itx: float, ity: float, cr: float, cg: float, cb: float, ca: float, colorm20: ptr, sf_rgb: int, sf_a: int, df_rgb: int, df_a: int, lighter_clamp: int, filter_kind: int)
+extern aether_ebiten_copy_pixels(img: ptr, stride: int, x0: int, y0: int, w: int, h: int, buf: ptr, direction: int)
+
+// ─── constants ───────────────────────────────────────────────────────────────
+
+const FILTER_NEAREST: int = 0
+const FILTER_LINEAR: int = 1
+
+// Named composite blend modes (blend.go's var block; Porter-Duff).
+const BLEND_SOURCE_OVER: int = 0
+const BLEND_CLEAR: int = 1
+const BLEND_COPY: int = 2
+const BLEND_DESTINATION: int = 3
+const BLEND_DESTINATION_OVER: int = 4
+const BLEND_SOURCE_IN: int = 5
+const BLEND_DESTINATION_IN: int = 6
+const BLEND_SOURCE_OUT: int = 7
+const BLEND_DESTINATION_OUT: int = 8
+const BLEND_SOURCE_ATOP: int = 9
+const BLEND_DESTINATION_ATOP: int = 10
+const BLEND_XOR: int = 11
+const BLEND_LIGHTER: int = 12
+
+// Blend factor kinds (internal).
+const FK_ZERO: int = 0
+const FK_ONE: int = 1
+const FK_SRC_COLOR: int = 2
+const FK_OM_SRC_COLOR: int = 3
+const FK_SRC_ALPHA: int = 4
+const FK_OM_SRC_ALPHA: int = 5
+const FK_DST_COLOR: int = 6
+const FK_OM_DST_COLOR: int = 7
+const FK_DST_ALPHA: int = 8
+const FK_OM_DST_ALPHA: int = 9
+
+// Blend operations (internal).
+const OP_ADD: int = 0
+const OP_SUBTRACT: int = 1
+const OP_REVERSE_SUBTRACT: int = 2
+const OP_MIN: int = 3
+const OP_MAX: int = 4
+
+// ─── GeoM ────────────────────────────────────────────────────────────────────
+// geom.go stores a-1/d-1 so Go's zero value is identity; construction goes
+// through geom_new here, so actual values are stored.
+
+struct GeoM {
+    a: float
+    b: float
+    c: float
+    d: float
+    tx: float
+    ty: float
+}
+
+geom_new() -> ptr {
+    g = malloc(48) as *GeoM
+    g.a = 1.0
+    g.b = 0.0
+    g.c = 0.0
+    g.d = 1.0
+    g.tx = 0.0
+    g.ty = 0.0
+    return g as ptr
+}
+
+geom_free(p: ptr) { free(p) }
+
+geom_reset(p: ptr) {
+    g = p as *GeoM
+    g.a = 1.0
+    g.b = 0.0
+    g.c = 0.0
+    g.d = 1.0
+    g.tx = 0.0
+    g.ty = 0.0
+}
+
+geom_copy_from(p: ptr, srcp: ptr) {
+    g = p as *GeoM
+    s = srcp as *GeoM
+    g.a = s.a
+    g.b = s.b
+    g.c = s.c
+    g.d = s.d
+    g.tx = s.tx
+    g.ty = s.ty
+}
+
+geom_clone(p: ptr) -> ptr {
+    q = geom_new()
+    geom_copy_from(q, p)
+    return q
+}
+
+// Apply pre-multiplies (x, y, 1): GeoM * (x, y, 1)^T.
+geom_apply_x(p: ptr, x: float, y: float) -> float {
+    g = p as *GeoM
+    return g.a * x + g.b * y + g.tx
+}
+
+geom_apply_y(p: ptr, x: float, y: float) -> float {
+    g = p as *GeoM
+    return g.c * x + g.d * y + g.ty
+}
+
+geom_element(p: ptr, i: int, j: int) -> float {
+    g = p as *GeoM
+    if i == 0 && j == 0 { return g.a }
+    if i == 0 && j == 1 { return g.b }
+    if i == 0 && j == 2 { return g.tx }
+    if i == 1 && j == 0 { return g.c }
+    if i == 1 && j == 1 { return g.d }
+    if i == 1 && j == 2 { return g.ty }
+    return 0.0
+}
+
+geom_set_element(p: ptr, i: int, j: int, v: float) {
+    g = p as *GeoM
+    if i == 0 && j == 0 { g.a = v }
+    if i == 0 && j == 1 { g.b = v }
+    if i == 0 && j == 2 { g.tx = v }
+    if i == 1 && j == 0 { g.c = v }
+    if i == 1 && j == 1 { g.d = v }
+    if i == 1 && j == 2 { g.ty = v }
+}
+
+// Concat: g = other * g (matrix product, other applied AFTER g).
+geom_concat(p: ptr, otherp: ptr) {
+    g = p as *GeoM
+    o = otherp as *GeoM
+    na = o.a * g.a + o.b * g.c
+    nb = o.a * g.b + o.b * g.d
+    ntx = o.a * g.tx + o.b * g.ty + o.tx
+    nc = o.c * g.a + o.d * g.c
+    nd = o.c * g.b + o.d * g.d
+    nty = o.c * g.tx + o.d * g.ty + o.ty
+    g.a = na
+    g.b = nb
+    g.c = nc
+    g.d = nd
+    g.tx = ntx
+    g.ty = nty
+}
+
+geom_scale(p: ptr, x: float, y: float) {
+    g = p as *GeoM
+    g.a = g.a * x
+    g.b = g.b * x
+    g.tx = g.tx * x
+    g.c = g.c * y
+    g.d = g.d * y
+    g.ty = g.ty * y
+}
+
+geom_translate(p: ptr, tx: float, ty: float) {
+    g = p as *GeoM
+    g.tx = g.tx + tx
+    g.ty = g.ty + ty
+}
+
+// Clockwise rotation by theta radians (y-down coordinates).
+geom_rotate(p: ptr, theta: float) {
+    if theta == 0.0 { return }
+    g = p as *GeoM
+    sn = math.sin(theta)
+    cs = math.cos(theta)
+    na = cs * g.a - sn * g.c
+    nb = cs * g.b - sn * g.d
+    ntx = cs * g.tx - sn * g.ty
+    nc = sn * g.a + cs * g.c
+    nd = sn * g.b + cs * g.d
+    nty = sn * g.tx + cs * g.ty
+    g.a = na
+    g.b = nb
+    g.c = nc
+    g.d = nd
+    g.tx = ntx
+    g.ty = nty
+}
+
+geom_skew(p: ptr, skew_x: float, skew_y: float) {
+    g = p as *GeoM
+    sx = math.tan(skew_x)
+    sy = math.tan(skew_y)
+    na = g.a + g.c * sx
+    nb = g.b + g.d * sx
+    nc = g.a * sy + g.c
+    nd = g.b * sy + g.d
+    ntx = g.tx + g.ty * sx
+    nty = g.ty + g.tx * sy
+    g.a = na
+    g.b = nb
+    g.c = nc
+    g.d = nd
+    g.tx = ntx
+    g.ty = nty
+}
+
+geom_det(p: ptr) -> float {
+    g = p as *GeoM
+    return g.a * g.d - g.b * g.c
+}
+
+geom_is_invertible(p: ptr) -> int {
+    if geom_det(p) != 0.0 { return 1 }
+    return 0
+}
+
+geom_invert(p: ptr) {
+    g = p as *GeoM
+    det = g.a * g.d - g.b * g.c
+    if det == 0.0 { return }
+    na = g.d / det
+    nb = (0.0 - g.b) / det
+    nc = (0.0 - g.c) / det
+    nd = g.a / det
+    ntx = ((0.0 - g.d) * g.tx + g.b * g.ty) / det
+    nty = (g.c * g.tx - g.a * g.ty) / det
+    g.a = na
+    g.b = nb
+    g.c = nc
+    g.d = nd
+    g.tx = ntx
+    g.ty = nty
+}
+
+// ─── DrawImageOptions (GeoM + ColorScale + Blend + Filter) ───────────────────
+// ColorScale is embedded (actual values, identity 1,1,1,1); it applies in the
+// premultiplied domain, exactly colorscale.go's apply().
+
+struct Opts {
+    g: ptr
+    cr: float
+    cg: float
+    cb: float
+    ca: float
+    blend: int
+    filter: int
+    cm: ptr
+}
+
+opts_new() -> ptr {
+    o = malloc(72) as *Opts
+    o.cm = null
+    o.g = geom_new()
+    o.cr = 1.0
+    o.cg = 1.0
+    o.cb = 1.0
+    o.ca = 1.0
+    o.blend = BLEND_SOURCE_OVER
+    o.filter = FILTER_NEAREST
+    return o as ptr
+}
+
+opts_free(p: ptr) {
+    o = p as *Opts
+    geom_free(o.g)
+    free(p)
+}
+
+opts_reset(p: ptr) {
+    o = p as *Opts
+    o.cm = null
+    geom_reset(o.g)
+    o.cr = 1.0
+    o.cg = 1.0
+    o.cb = 1.0
+    o.ca = 1.0
+    o.blend = BLEND_SOURCE_OVER
+    o.filter = FILTER_NEAREST
+}
+
+// The options' GeoM handle — mutate it with the geom_* functions.
+opts_geom(p: ptr) -> ptr {
+    o = p as *Opts
+    return o.g
+}
+
+opts_set_blend(p: ptr, blend_mode: int) {
+    o = p as *Opts
+    o.blend = blend_mode
+}
+
+opts_set_filter(p: ptr, filter_kind: int) {
+    o = p as *Opts
+    o.filter = filter_kind
+}
+
+// Attach a ColorM (colorm_new handle; null clears). Applied to STRAIGHT-alpha
+// colors before the (premultiplied) ColorScale, as in Ebiten's colorm package.
+opts_set_colorm(p: ptr, cm: ptr) {
+    o = p as *Opts
+    o.cm = cm
+}
+
+// ─── ColorM: 4x5 color matrix (colorm package / internal/affine) ─────────────
+// Row-major [row][col]: cols 0-3 multiply straight-alpha r,g,b,a; col 4 is
+// the translate term. Stored as 20 float64s.
+
+cm_get(p: ptr, row: int, col: int) -> float {
+    return mem.get_float64(p, (row * 5 + col) * 8)
+}
+
+cm_set(p: ptr, row: int, col: int, v: float) {
+    mem.set_float64(p, (row * 5 + col) * 8, v)
+}
+
+colorm_new() -> ptr {
+    p = malloc(160)
+    colorm_reset(p)
+    return p
+}
+
+colorm_free(p: ptr) { free(p) }
+
+colorm_reset(p: ptr) {
+    i = 0
+    while i < 4 {
+        j = 0
+        while j < 5 {
+            v = 0.0
+            if i == j { v = 1.0 }
+            cm_set(p, i, j, v)
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+colorm_is_identity(p: ptr) -> int {
+    i = 0
+    while i < 4 {
+        j = 0
+        while j < 5 {
+            want = 0.0
+            if i == j { want = 1.0 }
+            if cm_get(p, i, j) != want { return 0 }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+colorm_element(p: ptr, row: int, col: int) -> float { return cm_get(p, row, col) }
+colorm_set_element(p: ptr, row: int, col: int, v: float) { cm_set(p, row, col, v) }
+
+colorm_copy_from(p: ptr, src: ptr) {
+    i = 0
+    while i < 20 {
+        mem.set_float64(p, i * 8, mem.get_float64(src, i * 8))
+        i = i + 1
+    }
+}
+
+colorm_clone(p: ptr) -> ptr {
+    q = colorm_new()
+    colorm_copy_from(q, p)
+    return q
+}
+
+// Scale rows by (r, g, b, a) — including the translate column, as Go does.
+colorm_scale(p: ptr, r: float, g: float, b: float, a: float) {
+    j = 0
+    while j < 5 {
+        cm_set(p, 0, j, cm_get(p, 0, j) * r)
+        cm_set(p, 1, j, cm_get(p, 1, j) * g)
+        cm_set(p, 2, j, cm_get(p, 2, j) * b)
+        cm_set(p, 3, j, cm_get(p, 3, j) * a)
+        j = j + 1
+    }
+}
+
+colorm_translate(p: ptr, r: float, g: float, b: float, a: float) {
+    cm_set(p, 0, 4, cm_get(p, 0, 4) + r)
+    cm_set(p, 1, 4, cm_get(p, 1, 4) + g)
+    cm_set(p, 2, 4, cm_get(p, 2, 4) + b)
+    cm_set(p, 3, 4, cm_get(p, 3, 4) + a)
+}
+
+// p = other * p (other applied AFTER p), 4x5 with implicit (0,0,0,0,1) row.
+colorm_concat(p: ptr, otherp: ptr) {
+    tmp = malloc(160)
+    i = 0
+    while i < 4 {
+        j = 0
+        while j < 5 {
+            acc = 0.0
+            k = 0
+            while k < 4 {
+                acc = acc + cm_get(otherp, i, k) * cm_get(p, k, j)
+                k = k + 1
+            }
+            if j == 4 { acc = acc + cm_get(otherp, i, 4) }
+            mem.set_float64(tmp, (i * 5 + j) * 8, acc)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    colorm_copy_from(p, tmp)
+    free(tmp)
+}
+
+// Concat a plain 4x4 (rows given flat, row-major) after p — internal helper.
+cm_concat44(p: ptr, m: ptr) {
+    tmp = malloc(160)
+    i = 0
+    while i < 4 {
+        j = 0
+        while j < 5 {
+            acc = 0.0
+            k = 0
+            while k < 4 {
+                acc = acc + mem.get_float64(m, (i * 4 + k) * 8) * cm_get(p, k, j)
+                k = k + 1
+            }
+            mem.set_float64(tmp, (i * 5 + j) * 8, acc)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    colorm_copy_from(p, tmp)
+    free(tmp)
+}
+
+set44(m: ptr, i: int, j: int, v: float) { mem.set_float64(m, (i * 4 + j) * 8, v) }
+
+fill_zero44(m: ptr) {
+    i = 0
+    while i < 16 {
+        mem.set_float64(m, i * 8, 0.0)
+        i = i + 1
+    }
+}
+
+// RotateHue / ChangeHSV via RGB↔YCbCr (internal/affine ChangeHSV port).
+colorm_change_hsv(p: ptr, hue_theta: float, saturation: float, value: float) {
+    if hue_theta == 0.0 && saturation == 1.0 {
+        colorm_scale(p, value, value, value, 1.0)
+        return
+    }
+    m = malloc(128)
+    // RGB -> YCbCr
+    fill_zero44(m)
+    set44(m, 0, 0, 0.2990)
+    set44(m, 0, 1, 0.5870)
+    set44(m, 0, 2, 0.1140)
+    set44(m, 1, 0, 0.0 - 0.1687)
+    set44(m, 1, 1, 0.0 - 0.3313)
+    set44(m, 1, 2, 0.5000)
+    set44(m, 2, 0, 0.5000)
+    set44(m, 2, 1, 0.0 - 0.4187)
+    set44(m, 2, 2, 0.0 - 0.0813)
+    set44(m, 3, 3, 1.0)
+    cm_concat44(p, m)
+    // hue rotation in the CbCr plane
+    sn = math.sin(hue_theta)
+    cs = math.cos(hue_theta)
+    fill_zero44(m)
+    set44(m, 0, 0, 1.0)
+    set44(m, 1, 1, cs)
+    set44(m, 1, 2, 0.0 - sn)
+    set44(m, 2, 1, sn)
+    set44(m, 2, 2, cs)
+    set44(m, 3, 3, 1.0)
+    cm_concat44(p, m)
+    // scale value + saturation
+    colorm_scale(p, value, saturation * value, saturation * value, 1.0)
+    // YCbCr -> RGB
+    fill_zero44(m)
+    set44(m, 0, 0, 1.0)
+    set44(m, 0, 2, 1.40200)
+    set44(m, 1, 0, 1.0)
+    set44(m, 1, 1, 0.0 - 0.34414)
+    set44(m, 1, 2, 0.0 - 0.71414)
+    set44(m, 2, 0, 1.0)
+    set44(m, 2, 1, 1.77200)
+    set44(m, 3, 3, 1.0)
+    cm_concat44(p, m)
+    free(m)
+}
+
+colorm_rotate_hue(p: ptr, theta: float) {
+    colorm_change_hsv(p, theta, 1.0, 1.0)
+}
+
+// Apply the matrix to a straight-alpha quad; chan selects the output channel
+// (0..3). Unclamped, as affine.ColorM.Apply.
+colorm_apply_chan(p: ptr, r: float, g: float, b: float, a: float, chan: int) -> float {
+    v = cm_get(p, chan, 0) * r + cm_get(p, chan, 1) * g
+    v = v + cm_get(p, chan, 2) * b + cm_get(p, chan, 3) * a
+    return v + cm_get(p, chan, 4)
+}
+
+opts_color_reset(p: ptr) {
+    o = p as *Opts
+    o.cr = 1.0
+    o.cg = 1.0
+    o.cb = 1.0
+    o.ca = 1.0
+}
+
+opts_color_set(p: ptr, r: float, g: float, b: float, a: float) {
+    o = p as *Opts
+    o.cr = r
+    o.cg = g
+    o.cb = b
+    o.ca = a
+}
+
+opts_color_scale(p: ptr, r: float, g: float, b: float, a: float) {
+    o = p as *Opts
+    o.cr = o.cr * r
+    o.cg = o.cg * g
+    o.cb = o.cb * b
+    o.ca = o.ca * a
+}
+
+opts_color_scale_alpha(p: ptr, a: float) {
+    o = p as *Opts
+    o.cr = o.cr * a
+    o.cg = o.cg * a
+    o.cb = o.cb * a
+    o.ca = o.ca * a
+}
+
+opts_color_r(p: ptr) -> float {
+    o = p as *Opts
+    return o.cr
+}
+
+opts_color_g(p: ptr) -> float {
+    o = p as *Opts
+    return o.cg
+}
+
+opts_color_b(p: ptr) -> float {
+    o = p as *Opts
+    return o.cb
+}
+
+opts_color_a(p: ptr) -> float {
+    o = p as *Opts
+    return o.ca
+}
+
+// ─── Image ───────────────────────────────────────────────────────────────────
+// A root image owns a stride×bufh RGBA8888 buffer; a sub-image shares the
+// root's buffer and narrows the bounds. As in Ebiten, a sub-image's pixel
+// coordinates stay in the ROOT's coordinate space (Bounds().Min ≠ (0,0)),
+// and drawing one maps its bounds' min corner to the GeoM origin.
+
+struct Image {
+    pix: ptr
+    stride: int
+    bufh: int
+    x0: int
+    y0: int
+    w: int
+    h: int
+    root: ptr
+}
+
+image_new(w: int, h: int) -> ptr {
+    if w <= 0 || h <= 0 { return null }
+    img = malloc(64) as *Image
+    img.pix = calloc(w * h, 4)
+    img.stride = w
+    img.bufh = h
+    img.x0 = 0
+    img.y0 = 0
+    img.w = w
+    img.h = h
+    img.root = null
+    return img as ptr
+}
+
+image_free(p: ptr) {
+    if p == null { return }
+    img = p as *Image
+    if img.root == null { free(img.pix) }
+    free(p)
+}
+
+image_w(p: ptr) -> int {
+    img = p as *Image
+    return img.w
+}
+
+image_h(p: ptr) -> int {
+    img = p as *Image
+    return img.h
+}
+
+image_bounds_x0(p: ptr) -> int {
+    img = p as *Image
+    return img.x0
+}
+
+image_bounds_y0(p: ptr) -> int {
+    img = p as *Image
+    return img.y0
+}
+
+image_bounds_x1(p: ptr) -> int {
+    img = p as *Image
+    return img.x0 + img.w
+}
+
+image_bounds_y1(p: ptr) -> int {
+    img = p as *Image
+    return img.y0 + img.h
+}
+
+image_is_sub(p: ptr) -> int {
+    img = p as *Image
+    if img.root != null { return 1 }
+    return 0
+}
+
+// Raw buffer + row stride, for the engine's screen present.
+image_pix_ptr(p: ptr) -> ptr {
+    img = p as *Image
+    return img.pix
+}
+
+image_stride(p: ptr) -> int {
+    img = p as *Image
+    return img.stride
+}
+
+// Sub-image over [x0,y0)..(x1,y1) in the image's (root) coordinate space,
+// clamped to the image's bounds. Shares pixels with the root.
+image_sub(p: ptr, x0: int, y0: int, x1: int, y1: int) -> ptr {
+    img = p as *Image
+    bx0 = img.x0
+    by0 = img.y0
+    bx1 = img.x0 + img.w
+    by1 = img.y0 + img.h
+    if x0 < bx0 { x0 = bx0 }
+    if y0 < by0 { y0 = by0 }
+    if x1 > bx1 { x1 = bx1 }
+    if y1 > by1 { y1 = by1 }
+    if x1 < x0 { x1 = x0 }
+    if y1 < y0 { y1 = y0 }
+    sub = malloc(64) as *Image
+    sub.pix = img.pix
+    sub.stride = img.stride
+    sub.bufh = img.bufh
+    sub.x0 = x0
+    sub.y0 = y0
+    sub.w = x1 - x0
+    sub.h = y1 - y0
+    rootp = img.root
+    if rootp == null { rootp = p }
+    sub.root = rootp
+    return sub as ptr
+}
+
+// Fill the image's bounds region with straight RGBA bytes (0-255).
+// Overwrites (Ebiten Fill), including alpha.
+image_fill(p: ptr, r: int, g: int, b: int, a: int) {
+    img = p as *Image
+    if a == 255 {
+        aether_ebiten_fill_rect(img.pix, img.stride, img.x0, img.y0,
+            img.x0 + img.w, img.y0 + img.h, r, g, b, a)
+        return
+    }
+    y = 0
+    while y < img.h {
+        row = ((img.y0 + y) * img.stride + img.x0) * 4
+        x = 0
+        while x < img.w {
+            off = row + x * 4
+            mem.set_byte(img.pix, off, r)
+            mem.set_byte(img.pix, off + 1, g)
+            mem.set_byte(img.pix, off + 2, b)
+            mem.set_byte(img.pix, off + 3, a)
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+image_clear(p: ptr) {
+    image_fill(p, 0, 0, 0, 0)
+}
+
+// Axis-aligned solid rect (vector.FillRect's common case), source-over.
+// x/y in the image's (root) coordinate space; clipped to bounds.
+image_fill_rect(p: ptr, x: int, y: int, w: int, h: int, r: int, g: int, b: int, a: int) {
+    img = p as *Image
+    x0 = x
+    y0 = y
+    x1 = x + w
+    y1 = y + h
+    if x0 < img.x0 { x0 = img.x0 }
+    if y0 < img.y0 { y0 = img.y0 }
+    if x1 > img.x0 + img.w { x1 = img.x0 + img.w }
+    if y1 > img.y0 + img.h { y1 = img.y0 + img.h }
+    if x1 <= x0 || y1 <= y0 { return }
+    aether_ebiten_fill_rect(img.pix, img.stride, x0, y0, x1, y1, r, g, b, a)
+}
+
+// Set one pixel; x/y in the image's (root) coordinate space, as At/Set in Go.
+image_set(p: ptr, x: int, y: int, r: int, g: int, b: int, a: int) {
+    img = p as *Image
+    if x < img.x0 || x >= img.x0 + img.w { return }
+    if y < img.y0 || y >= img.y0 + img.h { return }
+    off = (y * img.stride + x) * 4
+    mem.set_byte(img.pix, off, r)
+    mem.set_byte(img.pix, off + 1, g)
+    mem.set_byte(img.pix, off + 2, b)
+    mem.set_byte(img.pix, off + 3, a)
+}
+
+// Per-channel pixel reads (straight alpha, 0-255); 0 outside bounds.
+// (No packed form: Aether int is 32-bit signed, 0xRRGGBBAA overflows.)
+image_at_chan(p: ptr, x: int, y: int, chan: int) -> int {
+    img = p as *Image
+    if x < img.x0 || x >= img.x0 + img.w { return 0 }
+    if y < img.y0 || y >= img.y0 + img.h { return 0 }
+    return mem.get_byte(img.pix, (y * img.stride + x) * 4 + chan)
+}
+
+image_at_r(p: ptr, x: int, y: int) -> int { return image_at_chan(p, x, y, 0) }
+image_at_g(p: ptr, x: int, y: int) -> int { return image_at_chan(p, x, y, 1) }
+image_at_b(p: ptr, x: int, y: int) -> int { return image_at_chan(p, x, y, 2) }
+image_at_a(p: ptr, x: int, y: int) -> int { return image_at_chan(p, x, y, 3) }
+
+// Copy the bounds region out as tightly-packed RGBA (w*h*4 bytes).
+image_read_pixels(p: ptr, out: ptr) {
+    img = p as *Image
+    aether_ebiten_copy_pixels(img.pix, img.stride, img.x0, img.y0, img.w, img.h, out, 0)
+}
+
+// Overwrite the bounds region from tightly-packed RGBA (w*h*4 bytes).
+image_write_pixels(p: ptr, src: ptr) {
+    img = p as *Image
+    aether_ebiten_copy_pixels(img.pix, img.stride, img.x0, img.y0, img.w, img.h, src, 1)
+}
+
+// ─── blend table ─────────────────────────────────────────────────────────────
+// Named mode → (srcFactorRGB, srcFactorAlpha, dstFactorRGB, dstFactorAlpha);
+// every named mode uses OP_ADD for both channels. slot: 0..3 as above.
+
+blend_factor(mode: int, slot: int) -> int {
+    src_f = FK_ONE
+    dst_f = FK_OM_SRC_ALPHA
+    if mode == BLEND_CLEAR {
+        src_f = FK_ZERO
+        dst_f = FK_ZERO
+    }
+    if mode == BLEND_COPY {
+        src_f = FK_ONE
+        dst_f = FK_ZERO
+    }
+    if mode == BLEND_DESTINATION {
+        src_f = FK_ZERO
+        dst_f = FK_ONE
+    }
+    if mode == BLEND_DESTINATION_OVER {
+        src_f = FK_OM_DST_ALPHA
+        dst_f = FK_ONE
+    }
+    if mode == BLEND_SOURCE_IN {
+        src_f = FK_DST_ALPHA
+        dst_f = FK_ZERO
+    }
+    if mode == BLEND_DESTINATION_IN {
+        src_f = FK_ZERO
+        dst_f = FK_SRC_ALPHA
+    }
+    if mode == BLEND_SOURCE_OUT {
+        src_f = FK_OM_DST_ALPHA
+        dst_f = FK_ZERO
+    }
+    if mode == BLEND_DESTINATION_OUT {
+        src_f = FK_ZERO
+        dst_f = FK_OM_SRC_ALPHA
+    }
+    if mode == BLEND_SOURCE_ATOP {
+        src_f = FK_DST_ALPHA
+        dst_f = FK_OM_SRC_ALPHA
+    }
+    if mode == BLEND_DESTINATION_ATOP {
+        src_f = FK_OM_DST_ALPHA
+        dst_f = FK_SRC_ALPHA
+    }
+    if mode == BLEND_XOR {
+        src_f = FK_OM_DST_ALPHA
+        dst_f = FK_OM_SRC_ALPHA
+    }
+    if mode == BLEND_LIGHTER {
+        src_f = FK_ONE
+        dst_f = FK_ONE
+    }
+    if slot == 0 || slot == 1 { return src_f }
+    return dst_f
+}
+
+// Evaluate one blend factor. sc/dc are the same channel's premultiplied
+// source/destination values; sa/da the alphas.
+fac(kind: int, sc: float, sa: float, dc: float, da: float) -> float {
+    if kind == FK_ZERO { return 0.0 }
+    if kind == FK_ONE { return 1.0 }
+    if kind == FK_SRC_COLOR { return sc }
+    if kind == FK_OM_SRC_COLOR { return 1.0 - sc }
+    if kind == FK_SRC_ALPHA { return sa }
+    if kind == FK_OM_SRC_ALPHA { return 1.0 - sa }
+    if kind == FK_DST_COLOR { return dc }
+    if kind == FK_OM_DST_COLOR { return 1.0 - dc }
+    if kind == FK_DST_ALPHA { return da }
+    if kind == FK_OM_DST_ALPHA { return 1.0 - da }
+    return 0.0
+}
+
+// ─── DrawImage blitter ───────────────────────────────────────────────────────
+
+clamp01(v: float) -> float {
+    if v < 0.0 { return 0.0 }
+    if v > 1.0 { return 1.0 }
+    return v
+}
+
+to_byte(v: float) -> int {
+    c = lrint(v * 255.0)
+    if c < 0 { c = 0 }
+    if c > 255 { c = 255 }
+    return c
+}
+
+floor_i(v: float) -> int { return lrint(math.floor(v)) }
+
+fmin2(a: float, b: float) -> float {
+    if a < b { return a }
+    return b
+}
+
+fmax2(a: float, b: float) -> float {
+    if a > b { return a }
+    return b
+}
+
+// Read one src texel (texel coords relative to the src bounds region) as
+// premultiplied floats into out4 (4 float64 slots).
+sample_texel(img: *Image, si: int, sj: int, out4: ptr) {
+    off = ((img.y0 + sj) * img.stride + (img.x0 + si)) * 4
+    r = mem.get_byte(img.pix, off)
+    g = mem.get_byte(img.pix, off + 1)
+    b = mem.get_byte(img.pix, off + 2)
+    a = mem.get_byte(img.pix, off + 3)
+    af = a / 255.0
+    mem.set_float64(out4, 0, r / 255.0 * af)
+    mem.set_float64(out4, 8, g / 255.0 * af)
+    mem.set_float64(out4, 16, b / 255.0 * af)
+    mem.set_float64(out4, 24, af)
+}
+
+// Draw src into dst under opts (GeoM/ColorScale/blend/filter). opts may be
+// null (identity, source-over, nearest) — as a nil *DrawImageOptions in Go.
+draw_image(dstp: ptr, srcp: ptr, optsp: ptr) {
+    dst = dstp as *Image
+    src = srcp as *Image
+    ga = 1.0
+    gb = 0.0
+    gc = 0.0
+    gd = 1.0
+    gtx = 0.0
+    gty = 0.0
+    cr = 1.0
+    cg = 1.0
+    cb = 1.0
+    ca = 1.0
+    blend_mode = BLEND_SOURCE_OVER
+    filter_kind = FILTER_NEAREST
+    cmp = null
+    if optsp != null {
+        o = optsp as *Opts
+        gm = o.g as *GeoM
+        ga = gm.a
+        gb = gm.b
+        gc = gm.c
+        gd = gm.d
+        gtx = gm.tx
+        gty = gm.ty
+        cr = o.cr
+        cg = o.cg
+        cb = o.cb
+        ca = o.ca
+        blend_mode = o.blend
+        filter_kind = o.filter
+        cmp = o.cm
+    }
+    det = ga * gd - gb * gc
+    if det == 0.0 { return }
+    sw = src.w * 1.0
+    sh = src.h * 1.0
+    if src.w <= 0 || src.h <= 0 { return }
+
+    // Destination bounding box of the transformed src rect, clipped to dst.
+    x00 = gtx
+    y00 = gty
+    x10 = ga * sw + gtx
+    y10 = gc * sw + gty
+    x01 = gb * sh + gtx
+    y01 = gd * sh + gty
+    x11 = ga * sw + gb * sh + gtx
+    y11 = gc * sw + gd * sh + gty
+    minx = fmin2(fmin2(x00, x10), fmin2(x01, x11))
+    maxx = fmax2(fmax2(x00, x10), fmax2(x01, x11))
+    miny = fmin2(fmin2(y00, y10), fmin2(y01, y11))
+    maxy = fmax2(fmax2(y00, y10), fmax2(y01, y11))
+    // Pixel coordinates are in the dst ROOT's coordinate space (as in Ebiten,
+    // drawing onto a sub-image keeps the original's coordinates and clips to
+    // the sub-image's bounds).
+    px0 = floor_i(minx)
+    py0 = floor_i(miny)
+    px1 = floor_i(math.ceil(maxx))
+    py1 = floor_i(math.ceil(maxy))
+    if px0 < dst.x0 { px0 = dst.x0 }
+    if py0 < dst.y0 { py0 = dst.y0 }
+    if px1 > dst.x0 + dst.w { px1 = dst.x0 + dst.w }
+    if py1 > dst.y0 + dst.h { py1 = dst.y0 + dst.h }
+    if px0 >= px1 || py0 >= py1 { return }
+
+    // Inverse transform (dst-local → src-local).
+    ia = gd / det
+    ib = (0.0 - gb) / det
+    ic = (0.0 - gc) / det
+    id = ga / det
+    itx = (gb * gty - gd * gtx) / det
+    ity = (gc * gtx - ga * gty) / det
+
+    // Hoisted blend parameters.
+    sf_rgb = blend_factor(blend_mode, 0)
+    sf_a = blend_factor(blend_mode, 1)
+    df_rgb = blend_factor(blend_mode, 2)
+    df_a = blend_factor(blend_mode, 3)
+    is_lighter_clamp = 0
+    if blend_mode == BLEND_LIGHTER { is_lighter_clamp = 1 }
+
+    cm20 = null
+    if cmp != null { cm20 = cmp }
+
+    aether_ebiten_blit(dst.pix, dst.stride,
+        src.pix, src.stride, src.x0, src.y0, src.w, src.h,
+        px0, py0, px1, py1,
+        ia, ib, ic, id, itx, ity,
+        cr, cg, cb, ca, cm20,
+        sf_rgb, sf_a, df_rgb, df_a, is_lighter_clamp, filter_kind)
+}
+
+// ─── DrawTriangles (software barycentric rasterizer) ─────────────────────────
+// Vertices are 8 float64 slots each: dstX, dstY, srcX, srcY (src TEXEL coords
+// in the src image's root coordinate space, as Ebiten's Vertex), then
+// straight-alpha color scale r,g,b,a. Indices are int32 triples.
+// Colors follow ColorScaleModeStraightAlpha (the Go default): the sample is
+// scaled by (r*a, g*a, b*a, a) in the premultiplied domain.
+
+// Write one vertex into a caller-allocated buffer (64 bytes per vertex).
+vertex_set(verts: ptr, i: int, dx: float, dy: float, sx: float, sy: float,
+           r: float, g: float, b: float, a: float) {
+    base = i * 64
+    mem.set_float64(verts, base, dx)
+    mem.set_float64(verts, base + 8, dy)
+    mem.set_float64(verts, base + 16, sx)
+    mem.set_float64(verts, base + 24, sy)
+    mem.set_float64(verts, base + 32, r)
+    mem.set_float64(verts, base + 40, g)
+    mem.set_float64(verts, base + 48, b)
+    mem.set_float64(verts, base + 56, a)
+}
+
+vget(verts: ptr, i: int, slot: int) -> float {
+    return mem.get_float64(verts, i * 64 + slot * 8)
+}
+
+// Draw indexed triangles sampling src, blending into dst under opts (GeoM in
+// opts is NOT applied — Ebiten's DrawTriangles takes final dst coords; blend
+// + filter from opts are honoured; opts may be null).
+draw_triangles(dstp: ptr, srcp: ptr, verts: ptr, n_verts: int,
+               indices: ptr, n_idx: int, optsp: ptr) {
+    dst = dstp as *Image
+    src = srcp as *Image
+    blend_mode = BLEND_SOURCE_OVER
+    filter_kind = FILTER_NEAREST
+    if optsp != null {
+        o = optsp as *Opts
+        blend_mode = o.blend
+        filter_kind = o.filter
+    }
+    sf_rgb = blend_factor(blend_mode, 0)
+    sf_a = blend_factor(blend_mode, 1)
+    df_rgb = blend_factor(blend_mode, 2)
+    df_a = blend_factor(blend_mode, 3)
+    t0 = malloc(32)
+
+    ti = 0
+    while ti + 2 < n_idx {
+        i0 = mem.get_int(indices, ti * 4)
+        i1 = mem.get_int(indices, (ti + 1) * 4)
+        i2 = mem.get_int(indices, (ti + 2) * 4)
+        x0 = vget(verts, i0, 0)
+        y0 = vget(verts, i0, 1)
+        x1 = vget(verts, i1, 0)
+        y1 = vget(verts, i1, 1)
+        x2 = vget(verts, i2, 0)
+        y2 = vget(verts, i2, 1)
+        area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+        if area != 0.0 {
+            minx = floor_i(fmin2(fmin2(x0, x1), x2))
+            maxx = floor_i(math.ceil(fmax2(fmax2(x0, x1), x2)))
+            miny = floor_i(fmin2(fmin2(y0, y1), y2))
+            maxy = floor_i(math.ceil(fmax2(fmax2(y0, y1), y2)))
+            if minx < dst.x0 { minx = dst.x0 }
+            if miny < dst.y0 { miny = dst.y0 }
+            if maxx > dst.x0 + dst.w { maxx = dst.x0 + dst.w }
+            if maxy > dst.y0 + dst.h { maxy = dst.y0 + dst.h }
+            py = miny
+            while py < maxy {
+                px = minx
+                while px < maxx {
+                    cx = px * 1.0 + 0.5
+                    cy = py * 1.0 + 0.5
+                    w0 = ((x1 - cx) * (y2 - cy) - (x2 - cx) * (y1 - cy)) / area
+                    w1 = ((x2 - cx) * (y0 - cy) - (x0 - cx) * (y2 - cy)) / area
+                    w2 = 1.0 - w0 - w1
+                    inside = 0
+                    if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 { inside = 1 }
+                    if w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0 { inside = 1 }
+                    if inside == 1 {
+                        // interpolate src texel + color
+                        su = w0 * vget(verts, i0, 2) + w1 * vget(verts, i1, 2) + w2 * vget(verts, i2, 2)
+                        sv = w0 * vget(verts, i0, 3) + w1 * vget(verts, i1, 3) + w2 * vget(verts, i2, 3)
+                        vr = w0 * vget(verts, i0, 4) + w1 * vget(verts, i1, 4) + w2 * vget(verts, i2, 4)
+                        vg = w0 * vget(verts, i0, 5) + w1 * vget(verts, i1, 5) + w2 * vget(verts, i2, 5)
+                        vb = w0 * vget(verts, i0, 6) + w1 * vget(verts, i1, 6) + w2 * vget(verts, i2, 6)
+                        va = w0 * vget(verts, i0, 7) + w1 * vget(verts, i1, 7) + w2 * vget(verts, i2, 7)
+                        // sample src at (su, sv) — root coords; clamp into bounds
+                        li = floor_i(su) - src.x0
+                        lj = floor_i(sv) - src.y0
+                        if li < 0 { li = 0 }
+                        if lj < 0 { lj = 0 }
+                        if li > src.w - 1 { li = src.w - 1 }
+                        if lj > src.h - 1 { lj = src.h - 1 }
+                        sample_texel(src, li, lj, t0)
+                        sr = mem.get_float64(t0, 0)
+                        sg = mem.get_float64(t0, 8)
+                        sb = mem.get_float64(t0, 16)
+                        sa = mem.get_float64(t0, 24)
+                        // straight-alpha color scale → premult factors
+                        sr = sr * vr * va
+                        sg = sg * vg * va
+                        sb = sb * vb * va
+                        sa = sa * va
+                        doff = (py * dst.stride + px) * 4
+                        da8 = mem.get_byte(dst.pix, doff + 3)
+                        daf = da8 / 255.0
+                        dr = mem.get_byte(dst.pix, doff) / 255.0 * daf
+                        dg = mem.get_byte(dst.pix, doff + 1) / 255.0 * daf
+                        db = mem.get_byte(dst.pix, doff + 2) / 255.0 * daf
+                        out_r = sr * fac(sf_rgb, sr, sa, dr, daf) + dr * fac(df_rgb, sr, sa, dr, daf)
+                        out_g = sg * fac(sf_rgb, sg, sa, dg, daf) + dg * fac(df_rgb, sg, sa, dg, daf)
+                        out_b = sb * fac(sf_rgb, sb, sa, db, daf) + db * fac(df_rgb, sb, sa, db, daf)
+                        out_a = sa * fac(sf_a, sa, sa, daf, daf) + daf * fac(df_a, sa, sa, daf, daf)
+                        if out_a <= 0.0 {
+                            mem.set_byte(dst.pix, doff, 0)
+                            mem.set_byte(dst.pix, doff + 1, 0)
+                            mem.set_byte(dst.pix, doff + 2, 0)
+                            mem.set_byte(dst.pix, doff + 3, 0)
+                        } else {
+                            oa = clamp01(out_a)
+                            mem.set_byte(dst.pix, doff, to_byte(clamp01(out_r / oa)))
+                            mem.set_byte(dst.pix, doff + 1, to_byte(clamp01(out_g / oa)))
+                            mem.set_byte(dst.pix, doff + 2, to_byte(clamp01(out_b / oa)))
+                            mem.set_byte(dst.pix, doff + 3, to_byte(oa))
+                        }
+                    }
+                    px = px + 1
+                }
+                py = py + 1
+            }
+        }
+        ti = ti + 3
+    }
+    free(t0)
+}

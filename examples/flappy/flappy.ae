@@ -1,0 +1,315 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// flappy.ae — port of examples/flappy/main.go (Flappy Gopher).
+//
+// Same mechanics: title → game → game-over, 16x fixed-point physics, camera
+// scroll, procedural pipes from a 256-entry random table, sprite-sheet tiles,
+// rotated gopher, jump/hit sounds, score = pipes passed.
+//
+// Substitutions vs the Go original (see AE-MIGRATION.md):
+// - text/v2 + PressStart2P TTF → the debug bitmap font, scaled (no TTF
+//   rasterizer yet)
+// - jump.ogg → decoded by std.audio's sniffing loader if the backend can;
+//   falls back to jab8.wav so the jump always sounds
+// - CRT shader (Kage), touch, gamepad paths: not ported
+//
+// Run from the repo root:
+//   DISPLAY=:0 ./target/build/examples/flappy/bin/flappy
+
+import ebiten
+import ebiten.core
+import ebiten.png
+import ebiten.util
+import ebiten.audio
+import std.mem
+import std.math
+
+extern println(s: string)
+extern exit(code: int)
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+
+const SCREEN_W: int = 640
+const SCREEN_H: int = 480
+const TILE: int = 32
+const PIPE_W: int = 64
+const PIPE_START_OFFSET_X: int = 8
+const PIPE_INTERVAL_X: int = 8
+const PIPE_GAP_Y: int = 5
+
+const MODE_TITLE: int = 0
+const MODE_GAME: int = 1
+const MODE_GAMEOVER: int = 2
+
+const PI: float = 3.14159265358979
+
+struct Game {
+    mode: int
+    x16: int
+    y16: int
+    vy16: int
+    camera_x: int
+    camera_y: int
+    pipe_ys: ptr      // 256 ints
+    gameover_count: int
+    seed: int
+    jump_snd: ptr
+    hit_snd: ptr
+    gopher: ptr
+    tiles: ptr
+    font: ptr
+}
+
+floor_div(x: int, y: int) -> int {
+    d = x / y
+    if d * y == x || x >= 0 { return d }
+    return d - 1
+}
+
+floor_mod(x: int, y: int) -> int {
+    return x - floor_div(x, y) * y
+}
+
+rand_n(g: *Game, n: int) -> int {
+    g.seed = g.seed * 1103515245 + 12345
+    v = (g.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % n
+}
+
+reset(g: *Game) {
+    g.x16 = 0
+    g.y16 = 100 * 16
+    g.vy16 = 0
+    g.camera_x = 0 - 240
+    g.camera_y = 0
+    i = 0
+    while i < 256 {
+        mem.set_int(g.pipe_ys, i * 4, rand_n(g, 6) + 2)
+        i = i + 1
+    }
+}
+
+pipe_at(g: *Game, tile_x: int) -> int {
+    // returns tileY, or -1 for "no pipe here"
+    if tile_x - PIPE_START_OFFSET_X <= 0 { return 0 - 1 }
+    if floor_mod(tile_x - PIPE_START_OFFSET_X, PIPE_INTERVAL_X) != 0 { return 0 - 1 }
+    idx = floor_div(tile_x - PIPE_START_OFFSET_X, PIPE_INTERVAL_X)
+    return mem.get_int(g.pipe_ys, (idx % 256) * 4)
+}
+
+score(g: *Game) -> int {
+    x = floor_div(g.x16, 16) / TILE
+    if x - PIPE_START_OFFSET_X <= 0 { return 0 }
+    return floor_div(x - PIPE_START_OFFSET_X, PIPE_INTERVAL_X)
+}
+
+hit(g: *Game) -> int {
+    if g.mode != MODE_GAME { return 0 }
+    gw = 30
+    gh = 60
+    w = core.image_w(g.gopher)
+    h = core.image_h(g.gopher)
+    x0 = floor_div(g.x16, 16) + (w - gw) / 2
+    y0 = floor_div(g.y16, 16) + (h - gh) / 2
+    x1 = x0 + gw
+    y1 = y0 + gh
+    if y0 < 0 - TILE * 4 { return 1 }
+    if y1 >= SCREEN_H - TILE { return 1 }
+    xmin = floor_div(x0 - PIPE_W, TILE)
+    xmax = floor_div(x0 + gw, TILE)
+    x = xmin
+    while x <= xmax {
+        y = pipe_at(g, x)
+        if y >= 0 {
+            keep = 1
+            if x0 >= x * TILE + PIPE_W { keep = 0 }
+            if x1 < x * TILE { keep = 0 }
+            if keep == 1 {
+                if y0 < y * TILE { return 1 }
+                if y1 >= (y + PIPE_GAP_Y) * TILE { return 1 }
+            }
+        }
+        x = x + 1
+    }
+    return 0
+}
+
+jump_pressed(e: ptr) -> int {
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { return 1 }
+    return ebiten.is_mouse_button_just_pressed(e, ebiten.MOUSE_BUTTON_LEFT)
+}
+
+update(e: ptr, g: *Game) {
+    if g.mode == MODE_TITLE {
+        if jump_pressed(e) == 1 { g.mode = MODE_GAME }
+        return
+    }
+    if g.mode == MODE_GAME {
+        g.x16 = g.x16 + 32
+        g.camera_x = g.camera_x + 2
+        if jump_pressed(e) == 1 {
+            g.vy16 = 0 - 96
+            audio.player_rewind(g.jump_snd)
+            audio.player_play(g.jump_snd)
+        }
+        g.y16 = g.y16 + g.vy16
+        g.vy16 = g.vy16 + 4
+        if g.vy16 > 96 { g.vy16 = 96 }
+        if hit(g) == 1 {
+            audio.player_rewind(g.hit_snd)
+            audio.player_play(g.hit_snd)
+            g.mode = MODE_GAMEOVER
+            g.gameover_count = 30
+        }
+        return
+    }
+    // MODE_GAMEOVER
+    if g.gameover_count > 0 { g.gameover_count = g.gameover_count - 1 }
+    if g.gameover_count == 0 && jump_pressed(e) == 1 {
+        reset(g)
+        g.mode = MODE_TITLE
+    }
+}
+
+draw_tiles(g: *Game, screen: ptr) {
+    nx = SCREEN_W / TILE
+    ny = SCREEN_H / TILE
+    src_x = 128
+    src_y = 192
+    o = core.opts_new()
+    gm = core.opts_geom(o)
+    i = 0 - 2
+    while i < nx + 1 {
+        // ground
+        core.geom_reset(gm)
+        core.geom_translate(gm, (i * TILE - floor_mod(g.camera_x, TILE)) * 1.0,
+            ((ny - 1) * TILE - floor_mod(g.camera_y, TILE)) * 1.0)
+        ground = core.image_sub(g.tiles, 0, 0, TILE, TILE)
+        core.draw_image(screen, ground, o)
+        core.image_free(ground)
+
+        // pipes
+        ty = pipe_at(g, floor_div(g.camera_x, TILE) + i)
+        if ty >= 0 {
+            j = 0
+            while j < ty {
+                core.geom_reset(gm)
+                core.geom_scale(gm, 1.0, 0.0 - 1.0)
+                core.geom_translate(gm, (i * TILE - floor_mod(g.camera_x, TILE)) * 1.0,
+                    (j * TILE - floor_mod(g.camera_y, TILE)) * 1.0)
+                core.geom_translate(gm, 0.0, TILE * 1.0)
+                ry = src_y + TILE
+                if j == ty - 1 { ry = src_y }
+                tile = core.image_sub(g.tiles, src_x, ry, src_x + TILE * 2, ry + TILE)
+                core.draw_image(screen, tile, o)
+                core.image_free(tile)
+                j = j + 1
+            }
+            j = ty + PIPE_GAP_Y
+            while j < SCREEN_H / TILE - 1 {
+                core.geom_reset(gm)
+                core.geom_translate(gm, (i * TILE - floor_mod(g.camera_x, TILE)) * 1.0,
+                    (j * TILE - floor_mod(g.camera_y, TILE)) * 1.0)
+                ry = src_y + TILE
+                if j == ty + PIPE_GAP_Y { ry = src_y }
+                tile = core.image_sub(g.tiles, src_x, ry, src_x + PIPE_W, ry + TILE)
+                core.draw_image(screen, tile, o)
+                core.image_free(tile)
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    core.opts_free(o)
+}
+
+draw_gopher(g: *Game, screen: ptr) {
+    o = core.opts_new()
+    gm = core.opts_geom(o)
+    w = core.image_w(g.gopher)
+    h = core.image_h(g.gopher)
+    core.geom_translate(gm, 0.0 - w / 2.0, 0.0 - h / 2.0)
+    core.geom_rotate(gm, g.vy16 * 1.0 / 96.0 * PI / 6.0)
+    core.geom_translate(gm, w / 2.0, h / 2.0)
+    core.geom_translate(gm, (g.x16 / 16 - g.camera_x) * 1.0,
+        (g.y16 / 16 - g.camera_y) * 1.0)
+    core.opts_set_filter(o, core.FILTER_LINEAR)
+    core.draw_image(screen, g.gopher, o)
+    core.opts_free(o)
+}
+
+pad4(v: int) -> string {
+    if v >= 1000 { return "${v}" }
+    if v >= 100 { return "0${v}" }
+    if v >= 10 { return "00${v}" }
+    return "000${v}"
+}
+
+draw(e: ptr, screen: ptr, g: *Game) {
+    core.image_fill(screen, 128, 160, 192, 255)
+    draw_tiles(g, screen)
+    if g.mode != MODE_TITLE { draw_gopher(g, screen) }
+
+    // title / status text (bitmap font, scaled — see header)
+    if g.mode == MODE_TITLE {
+        util.debug_print_scaled(g.font, screen, "FLAPPY GOPHER",
+            SCREEN_W / 2.0, 60.0, 3.0, util.ALIGN_CENTER)
+        util.debug_print_scaled(g.font, screen,
+            "PRESS SPACE KEY\n\nOR CLICK",
+            SCREEN_W / 2.0, 240.0, 2.0, util.ALIGN_CENTER)
+        util.debug_print_scaled(g.font, screen,
+            "Go Gopher by Renee French is\nlicenced under CC BY 3.0.",
+            SCREEN_W / 2.0, SCREEN_H - 40.0, 1.0, util.ALIGN_CENTER)
+    }
+    if g.mode == MODE_GAMEOVER {
+        util.debug_print_scaled(g.font, screen, "GAME OVER!",
+            SCREEN_W / 2.0, 200.0, 3.0, util.ALIGN_CENTER)
+    }
+    util.debug_print_scaled(g.font, screen, pad4(score(g)),
+        SCREEN_W * 1.0, 4.0, 2.0, util.ALIGN_RIGHT)
+    ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+}
+
+main() {
+    g = calloc(1, 128) as *Game
+    g.pipe_ys = malloc(256 * 4)
+    g.seed = 20240824
+    g.gopher = png.png_load("examples/resources/images/flappy/gopher.png")
+    g.tiles = png.png_load("examples/resources/images/flappy/tiles.png")
+    if g.gopher == null || g.tiles == null {
+        println("flappy: cannot load sprites (run from the repo root)")
+        exit(1)
+    }
+    g.font = util.debug_font_new()
+    _ = audio.context_new(48000)
+    g.jump_snd = audio.player_from_wav("examples/resources/audio/jump.ogg")
+    if g.jump_snd == null {
+        g.jump_snd = audio.player_from_wav("examples/resources/audio/jab8.wav")
+    }
+    g.hit_snd = audio.player_from_wav("examples/resources/audio/jab.wav")
+    reset(g)
+    g.mode = MODE_TITLE
+
+    e = ebiten.game_new(SCREEN_W, SCREEN_H)
+    ebiten.on_update(e) callback {
+        update(e, g)
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        draw(e, screen, g)
+    }
+    ebiten.run(e, "Flappy Gopher (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+}

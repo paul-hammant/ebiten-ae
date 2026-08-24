@@ -1,0 +1,51 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_util.ae — debug font decode + DebugPrint glyph rendering.
+import ebiten.core
+import ebiten.util
+
+extern println(s: string)
+extern exit(code: int)
+
+main() {
+    f = util.debug_font_new()
+    if f == null {
+        println("FAIL: font decode null")
+        exit(1)
+    }
+    if core.image_w(f) != 192 {
+        println("FAIL: font w ${core.image_w(f)}")
+        exit(1)
+    }
+    dst = core.image_new(64, 20)
+    core.image_fill(dst, 0, 0, 0, 255)
+    util.debug_print_at(f, dst, "A", 0, 0)
+    // count lit pixels in the first cell
+    lit = 0
+    y = 0
+    while y < 16 {
+        x = 0
+        while x < 8 {
+            if core.image_at_r(dst, x, y) > 128 { lit = lit + 1 }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    if lit < 5 {
+        println("FAIL: glyph A lit=${lit}")
+        exit(1)
+    }
+    println("test_util OK (lit=${lit})")
+}

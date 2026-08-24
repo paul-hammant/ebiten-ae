@@ -1,0 +1,233 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ae/ebiten/util.ae — ebitenutil equivalents: the DebugPrint bitmap-font
+// HUD. The 6x16-cell 256-glyph font sheet is the original ebitenutil/text.png
+// (tests/testdata/text.png here; ebitenutil/ lives on legacy_golang), embedded
+// below as hex (decoded once via ebiten.png on first use).
+
+exports (
+    debug_font_new, debug_print_at, debug_print_scaled,
+    ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
+)
+
+import ebiten.core
+import ebiten.png
+import std.mem
+import std.bytes
+import std.string
+
+extern string_char_at(s: string, index: int) -> int
+
+// The Ebiten debug font sheet (Apache 2.0), hex-encoded.
+const FONT_PNG_HEX: string = <<HEXEOF
+89504e470d0a1a0a0000000d49484452000000c00000008008060000005d84666b00000e6649444154789cec5d8d72dc
+ac0e259dbcf7f23d3977d2bbde62f91cfd606cefc63a339d26b22c84904060207f4a2271636400246e8d0c80c4adf1a7
+b5d67e7e90ff2712774225ff2712bf1bb2c7cf11207147c81e3f4780c43d90234022912340e2aec8112091c811207157
+e477804422bf03241289c4fd907b8112b7460640e2d6c80048dc1a1900895be35705407ed44b4c0772a2916f069a9c88
+2cc6d7d16b90ff12788395d96d01a2c9674896c61f95cfcad4741985254b7b3ea4cf9319395595cf586020c391ffaba7
+12e83b85972ecb9bd93811a0fa32bb21fd9f34a97f1574d86ee2e70ade73cb67fc869c3d362bd6772a23f863fa0c0440
+551ab737366a786440af3e8519c6d13321073b0ca8becc26ccc6ec7729bfa7910040baa95b6380feaa0f287a6bb6a136
+43cf2d394c9fa139c0d7d7d757ff7f5937d8a3ff1f28fd0a80e7fb55d2b52fd27d9902d530ceabe13bfdfff334f84190
+f55dd948d8e605a5fe7fd1d5afa23a237e47d0237b58f656752c4a1a88e8a84e28b358f0c3dfd32cbb59ca46a2ae8ade
+5ecdbd8c5e38546ee0b9eca1aa65502433c2cfea36d2c36bb2902ea857167cab9177a4bda43c220bd58ba569321dd682
+b0b280f4d681c21b0096433490736bceef75288f8ecaf34dcfdf40aaa6c06c00a04789383cd35d69449a8b0359d2d136
+f567ed48f440b9359d9328f6622957089a7fb9472f6f0014650420cfb4a040bdd4b08e2375f0f04681648f0480a7117b
+db5abdbae467e58f04b045f70205a2a3c32d96bdcd39c070eef42cbc57ee675eb0c86bcfbc6ea1b186f9c9d32dc32d72
+d0b3a6e4bf4c169333302a997af4ba7b746d201f46e5f5f27f6cf8b4e3cb9ea3bdaa37f7b7e46b81889ea19c7ea95757
+3f39e7d9e81af6e70143a1092c9c17b09e45044d24b79edef30039a174d0ab07b38194a5f57c80668e36885fa3331b47
+e53047b7ec1c08aca1f71966a5045a0e0873d948f9b2729631bc1891431ad233a790bfa3398636f7b0e6235a195e3a93
+eb9683ec13b0f3d1cf3f1ade06db2bf7a877ee04649fb4592271167ed566b844228a0c80c4ad910190b835beaf562091
+5820d7f967f3ab828c7559c8ab3db3f8b7abd943ebdcdad2a7592f592e92c3d68dbdfc1efd67d8d3cb1fadef11745687
+26b661203900dad66f13df6dfdd56cf535b2fdfb5adbefa05c7eff8ff0ace430fef2efabe4aa328cde7d45dee8c9d6c2
+45d92b1ef08cc941f4a2f1b7ed175d55ffbebe963da3fc0bed59fe7f46bd0ea7cb5daecfafe0d6f712ebbbc66a1700f2
+5b0a193d6dbb3f6713898defe7816bf001fee8175defbe73edab20d311caefdf95bd5a596ffd50eb7b34bdb7bfc72ea3
+e516dcebab742143f2b3b6a7606de779f78f5150f44ba6c4d11f35a6cb6fca3e1289e53c81ec659e74b837e9649cf951
+69d6286ac95721db8e9dab58f00a00d770d1e1a781a3ef3019205f84f4a89c117dbcce2fa00dcfae7217fd9d93bf0dff
+b2a96eaf1daccd794876bfa9d14367b23d3a39e1de0d205781e410f590f955a794cce9c33d9ec8f52b9903b07d2485e4
+c4c33d2febd18d77e8c92daf2392fad27a2c238c9cdb2873a411c89e9b9df0f3e4dc55a64fd18ec69dd307b10a003951
+7338d662983d436db8f7ec9c0b0db5bb528f4143ab0e1b90e186a2676f87e848b60756aa83f847749b5aa7570ab4ecaf
+26395cb8c0bde9c851f0e815e9bd2d397b65687af47aceb4b796ba20fd641ae6e51fd56be45d863f22777c782a50c01c
+40e6a0ddf21be42f2297b51a90c857d1972de47865d4a89eb3f40f1e94a97dbd22f20dfe557ad51d5e92c1115a2ce97c
+6dd49e73470079baa6fc5baf7da17774700aa7ca670b9df1b3133d5ac331f9484fc2bfa283fcd9acafc73e017ddcf55d
+52bea87cc4b787bfacd7f2557dd8efec2457e93a1bcd261d6f64a16483bff23c2f27de0667e6f45721baec1ee1ffedb6
+4b2462c8dda0895b230320716b6400246e8dd556886b554924fe0fcfeace9e256955e80c9e19ef7b2b38cb089a9c438c
+9d8068ebdd9c72f7a904bce0ab29e7453c303f62ec594ef2bcdfb6db9187e5598e1d94f391cb689f14bcccce5e7a135f
+c6ad764373807769e45a946bc2bdd0dedf2bfbc370977a96b23e0ca57eeb5227c1ecf3bfb28d99f187e8a84216bf269f
+f51c46afa2a22f0f0db9defa3601c68f7a36affc02beb0a277cfa26b75de0bf9657cc6c7c35ab6d76d574267fc92aefe
+691dad2119fff28c181e1aa06d4f126d4ec2313992dfd2c7b08fd79e352a1f95e1a88f9b2eeb2ef482fcb24ea85e5a5b
+a167b3036925b82b207c244fe347f2cb7883a97cac7e727459f4d67851f9963eb31c4ecaeff5058e006de2b4a7564f9a
+7b7bdb81d89acef9583bcac047ef6aa0d7a2b4ed21eb916da8d53ad8e1783f52d62e8c1c8839529f80fc7e435f956d17
+41973b6b72985ce884d2a91b3f105307cf310ca739d687b065780a3b7f6048eacba09590db77a3fa7831eb2c4004338e
+38f63da156074427bcab74c52a5beed5eff5973b3867e5e63340038055a0381bacdf3a8b1a92f16bca8aedbb26bae1fa
+216956398d4c2411af47176dffbd737bb94b67644fd096556bdf2fb0e7ff8b9c070032576d8cfec0c953c5c33bb359a8
+a23728223f47c3a34597c31ee37f010da3402ff42e9d4b80bcd22dc7e01fd24783515f5916eb5db576b1f49634d50e8e
+f6a23ea40446253c978f24a7a0efe19ea4a18abf93f10603e023b0b3bd3c29d25ba4516743ebe146e4bc03bc7abc8bbe
+11cc6aaf4422311bb91d3a716b6400246e8d0c80c4ad910190b835320012b7460640e2d6c80048dc1a1900895b230320
+716b6400246e8d0c80c4ad910190b835320012b7460640e2d6c80048dc1a1900895b230320716b6400246e8d8f0b0074
+6340db5ecdb7e2bde09e9f43cb8ddcf913793e1bb3ca8bd6776a3d470af728c09c5893dfc09d98855cebd78cbb328f72
+50566e0390ef45ece6ed04885e66197b6dd4bd0b6f8a8bd417c9d1e8e580e080852b4e1bbed7dffa9dd0d0cfabfb761a
+b9cb1205c60c48db34c77d389add887ef02e568793879c9f95e385434797fdb54052e8658f1d90b0d5efd2c188426a83
+82685503a0047bca267adfdee164432b3a85209dc7e34052376747508cc61fc24901b0a99f66f76800303988ee9d03d0
+1bc38c2b0dd99ff0673db7e928cb757b8186aee86e4a74e560fb77c7e5f0e5b22340d7148a007e4807418e14d1db39d2
+0ca329d74922f476279de4c3235fd4c31c01664d82ab55e1ced9646efc40ef29776e6a57f941f446e902f221ef0c05ce
+cfae717fbd2369ddb347e49669718f66ed7e2ffdbda122782b7bdf59ace72a44592f585f561fa4a77247ea2608a41c44
+47eddb7724bdeee19bbf8d214bfb430c1b1960c892f7dd6f5211a48f96029032e91c400424fd3b07928fc8194a8134ec
+7ddf2bb78114d1618f3da0f7826a731ca237f2970aea51c27a6b8a48a1acb1043fccc365058c868f4eb2377f610595ab
+18d3abd7a61398e4c0a70640311c716fb901fb3347df04a41118f4f9500ad45d894e87dc5e01315c3dca7ac82e68a844
+0086a1fc62a87df4d7b8f7d791f7e5b23c14d5dd512ebc7adc0be1230f2be0f7e048d912ccfe8da4a01e3d59bae9a897
+1dd8564f2c0b432383966b6aa386369ab82b40865ac73b5ef933cbd564cc483b5e903df059238001cbeeb027471904e2
+07bcee7a452755a30e17a19fd528bf120dcfbd5847155e6c3818748ee6e09fde99243e1047e4f6cf1fd3b1121f83d9ce
+9ace9f487c123e6e37682231131900895be36f0058b377f49c2d3da18f49da07a6192b07b3f4677a1e2ddf231bd973af
+3e96fc91b639424f4b9f29ab4f0ee1689b02da0ab17987ad295b0e278da1adf94ed4dfda6a3c557e13607650cad8ab8f
+bbbd18b4f5f513dba56ae515a513e811598f976babf267d79a32ab80a0cbbd1c6c2bc491fa1f26bf6b5854afd3f57194
+fb8274daabdb8575282cb85045aea09b5f20496f44f7f6cca2cb6752f75974d2fb42fb9da10fa22348dd2dfd4fa257d9
+a1201bfffcfcbd10e436d20be8236bc83fef3ce4befef26f6fcf0c7aed745ced7d9a4537eab7ea05bb7d2fafc6446718
+0ea4979e2e7f178eb9d1ff247afff34376a4ab3313cd97829c4ddf0ca78de4a347d38f2e47f6b656fdd1fb67d00b693b
+f9debbe8c3e4c8e7cb32e855910ae9dd8e517387e8c28f86ec59f4230176d6f6cf2227df0e87b55bf35df461076eba77
+5e07a1fec8177ae6abe82215318d8cb636cfa49f884d99dad6ecb3d1d6694edfcb864ebf1d806ab4a3ec585e36fd2ec2
+e1fae8b88aee0188eec84ac308fd32bc4310f43d2d9a13748e166ac703e169c71a5e85398b2e73e38257273e7e158894
+69e6be92ff0c3a70aaabf5a1fe2bf46473abfad50994b9787d033a9a1f3471c0be90686739ea085d9631fb67e8588a7d
+8ed647fb7985a6dff471963e9a9d109fe637ef0bd40324de02d91e27228d9d4824123390dba113b7460640e2d6b83c00
+e4b2e01dd1c806afc449b00c8f9e33c7458dc91a18ac7b5faabf43cf43e41765854bb3e75e7d2cf97b03f20cbb45f454
+e53884cb8f0d453a2e28a016e5e317a8f0f00acf44fd4f3d1053d636b09c1f95b1579f707ba172194e6c976ae9a7c929
+5219077dcfc71d246bc6f2e691fa1f2ddf3ae473ba3e88ae394fe10e785abb58fa4139ad43cf99f435bd08cca637b1dd
+81bd73951d3ac051bc29296d33d2cbc974b69d7cc3bf6c86db1c80b89afefcfdbf76fe810faa8f1ca966d041b98fe570
+50ffec6a3b806078487e7121f0836c512847d3fb43436dbd690fcb69027de5afa62f8a363cb4b1cd70d3e84b41a4fcdd
+74f67b038182ec70165d38d0eb9f78ef723da376fb6ea0072aa4673a93deb64707d136db4a8e44fec52cfac59831379a
+05d9a316d12e97e8da62f38e15ff77c7cc6e24b88abe28fb40e7854143c8b4e131899ed8a28236a27f9b8c38e82e7a97
+963d648a867c46e35f4db41a4845aea08b0ad3d4e8227a3998feaee7010afadd92c3f4df4befca82679289fe95a5d455
+e47aef4087c6963d9090f39be89ae35da5e70ac2c934394cff213aea44806357d9a94a7ead6e6f07a5474a5c8b4bdac3
+33725afce7693b0f1fa974e23078464e8b3f91b827fe170000ffffebc7c034d6da60590000000049454e44ae426082
+HEXEOF
+
+hex_val(c: int) -> int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return 0 - 1
+}
+
+// Build the debug font image (a core image handle). Call once, reuse.
+debug_font_new() -> ptr {
+    n = string.length(FONT_PNG_HEX)
+    b = bytes.new(n / 2)
+    p = bytes.data(b)
+    bi = 0
+    i = 0
+    hi = 0 - 1
+    while i < n {
+        c = string_char_at(FONT_PNG_HEX, i)
+        if c < 0 { c = c + 256 }
+        v = hex_val(c)
+        if v >= 0 {
+            if hi < 0 {
+                hi = v
+            } else {
+                mem.set_byte(p, bi, hi * 16 + v)
+                bi = bi + 1
+                hi = 0 - 1
+            }
+        }
+        i = i + 1
+    }
+    img = png.png_decode(p, bi)
+    bytes.free(b)
+    return img
+}
+
+// DebugPrintAt: draw str onto dst with the 6x16 font, top-left at (ox, oy).
+// Newlines wrap. `font` is from debug_font_new().
+debug_print_at(font: ptr, dst: ptr, str: string, ox: int, oy: int) {
+    if font == null { return }
+    o = core.opts_new()
+    g = core.opts_geom(o)
+    n = string.length(str)
+    x = 0
+    y = 0
+    i = 0
+    while i < n {
+        c = string_char_at(str, i)
+        if c < 0 { c = c + 256 }
+        if c == 10 {
+            x = 0
+            y = y + 16
+        } else {
+            sx = (c % 32) * 6
+            sy = (c / 32) * 16
+            glyph = core.image_sub(font, sx, sy, sx + 6, sy + 16)
+            core.geom_reset(g)
+            core.geom_translate(g, (x + ox + 1) * 1.0, (y + oy) * 1.0)
+            core.draw_image(dst, glyph, o)
+            core.image_free(glyph)
+            x = x + 6
+        }
+        i = i + 1
+    }
+    core.opts_free(o)
+}
+
+const ALIGN_LEFT: int = 0
+const ALIGN_CENTER: int = 1
+const ALIGN_RIGHT: int = 2
+
+// Length of the line starting at `from` (up to \n or end).
+line_len(str: string, from: int, n: int) -> int {
+    i = from
+    while i < n {
+        c = string_char_at(str, i)
+        if c == 10 { return i - from }
+        i = i + 1
+    }
+    return n - from
+}
+
+// Scaled multi-line text from the debug font. (ox, oy) anchors the first
+// line; align positions each line about ox (left edge / center / right
+// edge). Line height is 16*scale, advance 6*scale.
+debug_print_scaled(font: ptr, dst: ptr, str: string, ox: float, oy: float,
+                   scale: float, align: int) {
+    if font == null { return }
+    o = core.opts_new()
+    g = core.opts_geom(o)
+    n = string.length(str)
+    y = 0.0
+    i = 0
+    while i < n {
+        ll = line_len(str, i, n)
+        lw = ll * 6.0 * scale
+        x = ox
+        if align == ALIGN_CENTER { x = ox - lw / 2.0 }
+        if align == ALIGN_RIGHT { x = ox - lw }
+        j = 0
+        while j < ll {
+            c = string_char_at(str, i + j)
+            if c < 0 { c = c + 256 }
+            sx = (c % 32) * 6
+            sy = (c / 32) * 16
+            glyph = core.image_sub(font, sx, sy, sx + 6, sy + 16)
+            core.geom_reset(g)
+            core.geom_scale(g, scale, scale)
+            core.geom_translate(g, x + j * 6.0 * scale, oy + y)
+            core.draw_image(dst, glyph, o)
+            core.image_free(glyph)
+            j = j + 1
+        }
+        i = i + ll
+        if i < n { i = i + 1 }
+        y = y + 16.0 * scale
+    }
+    core.opts_free(o)
+}

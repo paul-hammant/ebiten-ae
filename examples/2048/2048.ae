@@ -1,0 +1,448 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// 2048.ae — port of examples/2048 (package twenty48): the sliding-tile
+// game with the original's palette, slide + pop animations, and arrow-key /
+// WASD input. Tile numerals use the scaled debug bitmap font (the Go
+// original uses a TTF); touch/swipe input is not ported.
+//
+//   DISPLAY=:0 ./target/build/examples/2048/bin/2048
+
+import ebiten
+import ebiten.core
+import ebiten.util
+import std.mem
+import std.string
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+extern lrint(x: float) -> long
+
+const SCREEN_W: int = 420
+const SCREEN_H: int = 600
+const N: int = 4
+const TILE: int = 80
+const MARGIN: int = 4
+const BOARD_PX: int = 340
+const MOVE_FRAMES: int = 6
+const POP_FRAMES: int = 6
+
+const DIR_NONE: int = 0
+const DIR_LEFT: int = 1
+const DIR_RIGHT: int = 2
+const DIR_UP: int = 3
+const DIR_DOWN: int = 4
+
+// One animating tile: slides from (fx, fy) to (tx, ty) in cell coords, shows
+// `value` while sliding; `merged_to` is the value it becomes on landing
+// (0 = unchanged), which pops.
+struct Game {
+    cells: ptr        // N*N int32 committed values
+    anim_from: ptr    // per moving tile: fx, fy, tx, ty, value (int32 x5) x 16
+    anim_n: int
+    anim_frame: int
+    pop_x: ptr        // cells that pop after landing (int32 pairs) x 16
+    pop_n: int
+    pop_frame: int
+    score: int
+    seed: int
+    font: ptr
+    board_img: ptr
+    game_over: int
+}
+
+cell(g: *Game, x: int, y: int) -> int { return mem.get_int(g.cells, (y * N + x) * 4) }
+cell_set(g: *Game, x: int, y: int, v: int) { mem.set_int(g.cells, (y * N + x) * 4, v) }
+
+rand_n(g: *Game, n: int) -> int {
+    g.seed = g.seed * 1103515245 + 12345
+    v = (g.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % n
+}
+
+spawn_tile(g: *Game) {
+    free_n = 0
+    i = 0
+    while i < N * N {
+        if mem.get_int(g.cells, i * 4) == 0 { free_n = free_n + 1 }
+        i = i + 1
+    }
+    if free_n == 0 { return }
+    pick = rand_n(g, free_n)
+    v = 2
+    if rand_n(g, 10) == 0 { v = 4 }
+    i = 0
+    while i < N * N {
+        if mem.get_int(g.cells, i * 4) == 0 {
+            if pick == 0 {
+                mem.set_int(g.cells, i * 4, v)
+                mem.set_int(g.pop_x, g.pop_n * 8, i % N)
+                mem.set_int(g.pop_x, g.pop_n * 8 + 4, i / N)
+                g.pop_n = g.pop_n + 1
+                g.pop_frame = POP_FRAMES
+                return
+            }
+            pick = pick - 1
+        }
+        i = i + 1
+    }
+}
+
+// Slide+merge one line. line/out are 4-int scratch ptrs; returns 1 if the
+// line changed. Records slide animations via the caller-provided mapper.
+struct LineCtx {
+    vals: ptr     // 4 int32 input values
+    src: ptr      // 4 int32 source indices (0..3 within the line)
+    out: ptr      // 4 int32 result values
+    out_src: ptr  // for each output cell: source index (or -1)
+    out_src2: ptr // second source when merged (or -1)
+    out_pop: ptr  // 1 if merged (pops)
+}
+
+slide_line(c: *LineCtx) -> int {
+    // compact non-zeros with merge
+    tmp_v = malloc(16)
+    tmp_s = malloc(16)
+    tn = 0
+    i = 0
+    while i < N {
+        v = mem.get_int(c.vals, i * 4)
+        if v != 0 {
+            mem.set_int(tmp_v, tn * 4, v)
+            mem.set_int(tmp_s, tn * 4, i)
+            tn = tn + 1
+        }
+        i = i + 1
+    }
+    o = 0
+    changed = 0
+    i = 0
+    while i < N {
+        mem.set_int(c.out, i * 4, 0)
+        mem.set_int(c.out_src, i * 4, 0 - 1)
+        mem.set_int(c.out_src2, i * 4, 0 - 1)
+        mem.set_int(c.out_pop, i * 4, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < tn {
+        v = mem.get_int(tmp_v, i * 4)
+        s = mem.get_int(tmp_s, i * 4)
+        if i + 1 < tn && mem.get_int(tmp_v, (i + 1) * 4) == v {
+            mem.set_int(c.out, o * 4, v * 2)
+            mem.set_int(c.out_src, o * 4, s)
+            mem.set_int(c.out_src2, o * 4, mem.get_int(tmp_s, (i + 1) * 4))
+            mem.set_int(c.out_pop, o * 4, 1)
+            i = i + 2
+        } else {
+            mem.set_int(c.out, o * 4, v)
+            mem.set_int(c.out_src, o * 4, s)
+            i = i + 1
+        }
+        o = o + 1
+    }
+    i = 0
+    while i < N {
+        if mem.get_int(c.out, i * 4) != mem.get_int(c.vals, i * 4) { changed = 1 }
+        i = i + 1
+    }
+    free(tmp_v)
+    free(tmp_s)
+    return changed
+}
+
+extern free(p: ptr)
+
+// Map a (line, pos) pair to board cell coords for the given direction.
+lx(dir: int, line: int, pos: int) -> int {
+    if dir == DIR_LEFT { return pos }
+    if dir == DIR_RIGHT { return N - 1 - pos }
+    return line
+}
+
+ly(dir: int, line: int, pos: int) -> int {
+    if dir == DIR_UP { return pos }
+    if dir == DIR_DOWN { return N - 1 - pos }
+    return line
+}
+
+move(g: *Game, dir: int) {
+    c = malloc(64) as *LineCtx
+    c.vals = malloc(16)
+    c.src = malloc(16)
+    c.out = malloc(16)
+    c.out_src = malloc(16)
+    c.out_src2 = malloc(16)
+    c.out_pop = malloc(16)
+    moved = 0
+    g.anim_n = 0
+    g.pop_n = 0
+    line = 0
+    while line < N {
+        pos = 0
+        while pos < N {
+            mem.set_int(c.vals, pos * 4, cell(g, lx(dir, line, pos), ly(dir, line, pos)))
+            pos = pos + 1
+        }
+        if slide_line(c) == 1 {
+            moved = 1
+            // record slide animations + merged pops, then commit the line
+            pos = 0
+            while pos < N {
+                ov = mem.get_int(c.out, pos * 4)
+                s1 = mem.get_int(c.out_src, pos * 4)
+                s2 = mem.get_int(c.out_src2, pos * 4)
+                if ov != 0 && s1 >= 0 {
+                    // animate s1 (and s2) sliding to pos with their OLD value
+                    base = g.anim_n * 20
+                    mem.set_int(g.anim_from, base, lx(dir, line, s1))
+                    mem.set_int(g.anim_from, base + 4, ly(dir, line, s1))
+                    mem.set_int(g.anim_from, base + 8, lx(dir, line, pos))
+                    mem.set_int(g.anim_from, base + 12, ly(dir, line, pos))
+                    old_v = ov
+                    if mem.get_int(c.out_pop, pos * 4) == 1 { old_v = ov / 2 }
+                    mem.set_int(g.anim_from, base + 16, old_v)
+                    g.anim_n = g.anim_n + 1
+                    if s2 >= 0 && g.anim_n < 16 {
+                        base = g.anim_n * 20
+                        mem.set_int(g.anim_from, base, lx(dir, line, s2))
+                        mem.set_int(g.anim_from, base + 4, ly(dir, line, s2))
+                        mem.set_int(g.anim_from, base + 8, lx(dir, line, pos))
+                        mem.set_int(g.anim_from, base + 12, ly(dir, line, pos))
+                        mem.set_int(g.anim_from, base + 16, old_v)
+                        g.anim_n = g.anim_n + 1
+                    }
+                    if mem.get_int(c.out_pop, pos * 4) == 1 {
+                        mem.set_int(g.pop_x, g.pop_n * 8, lx(dir, line, pos))
+                        mem.set_int(g.pop_x, g.pop_n * 8 + 4, ly(dir, line, pos))
+                        g.pop_n = g.pop_n + 1
+                        g.score = g.score + ov
+                    }
+                }
+                pos = pos + 1
+            }
+            pos = 0
+            while pos < N {
+                cell_set(g, lx(dir, line, pos), ly(dir, line, pos), mem.get_int(c.out, pos * 4))
+                pos = pos + 1
+            }
+        }
+        line = line + 1
+    }
+    if moved == 1 {
+        g.anim_frame = MOVE_FRAMES
+        g.pop_frame = 0
+        spawn_tile(g)
+    }
+    free(c.vals)
+    free(c.src)
+    free(c.out)
+    free(c.out_src)
+    free(c.out_src2)
+    free(c.out_pop)
+    free(c as ptr)
+}
+
+can_move(g: *Game) -> int {
+    x = 0
+    while x < N {
+        y = 0
+        while y < N {
+            v = cell(g, x, y)
+            if v == 0 { return 1 }
+            if x + 1 < N && cell(g, x + 1, y) == v { return 1 }
+            if y + 1 < N && cell(g, x, y + 1) == v { return 1 }
+            y = y + 1
+        }
+        x = x + 1
+    }
+    return 0
+}
+
+// tile background color by value (colors.go); NRGBA rows premixed to RGBA
+// over the frame color where the original used alpha.
+tile_bg(v: int, chan: int) -> int {
+    r = 238
+    g = 228
+    b = 218
+    a = 89
+    if v == 2 { r = 238 g = 228 b = 218 a = 255 }
+    if v == 4 { r = 237 g = 224 b = 200 a = 255 }
+    if v == 8 { r = 242 g = 177 b = 121 a = 255 }
+    if v == 16 { r = 245 g = 149 b = 99 a = 255 }
+    if v == 32 { r = 246 g = 124 b = 95 a = 255 }
+    if v == 64 { r = 246 g = 94 b = 59 a = 255 }
+    if v == 128 { r = 237 g = 207 b = 114 a = 255 }
+    if v == 256 { r = 237 g = 204 b = 97 a = 255 }
+    if v == 512 { r = 237 g = 200 b = 80 a = 255 }
+    if v == 1024 { r = 237 g = 197 b = 63 a = 255 }
+    if v == 2048 { r = 237 g = 194 b = 46 a = 255 }
+    if v >= 4096 { r = 163 g = 73 b = 164 a = 255 }
+    if chan == 0 { return r }
+    if chan == 1 { return g }
+    if chan == 2 { return b }
+    return a
+}
+
+cell_px(i: int) -> int { return i * TILE + (i + 1) * MARGIN }
+
+draw_tile_at(g: *Game, px: int, py: int, v: int, size: int) {
+    if v == 0 { return }
+    off = (TILE - size) / 2
+    core.image_fill_rect(g.board_img, px + off, py + off, size, size,
+        tile_bg(v, 0), tile_bg(v, 1), tile_bg(v, 2), tile_bg(v, 3))
+    // numeral: white on big tiles, grey-brown on 2/4
+    tr = 249
+    tg = 246
+    tb = 242
+    if v == 2 || v == 4 { tr = 119 tg = 110 tb = 101 }
+    _ = tr
+    _ = tg
+    _ = tb
+    scale = 3.0
+    if v >= 100 { scale = 2.5 }
+    if v >= 1000 { scale = 2.0 }
+    util.debug_print_scaled(g.font, g.board_img, "${v}",
+        px * 1.0 + TILE / 2.0, py * 1.0 + TILE / 2.0 - 8.0 * scale,
+        scale, util.ALIGN_CENTER)
+}
+
+draw_board(g: *Game, screen: ptr) {
+    core.image_fill(g.board_img, 187, 173, 160, 255)
+    // empty cell backgrounds
+    x = 0
+    while x < N {
+        y = 0
+        while y < N {
+            core.image_fill_rect(g.board_img, cell_px(x), cell_px(y), TILE, TILE,
+                tile_bg(0, 0), tile_bg(0, 1), tile_bg(0, 2), tile_bg(0, 3))
+            y = y + 1
+        }
+        x = x + 1
+    }
+    if g.anim_frame > 0 {
+        // sliding: static cells that aren't animation targets, plus movers
+        x = 0
+        while x < N {
+            y = 0
+            while y < N {
+                v = cell(g, x, y)
+                is_target = 0
+                i = 0
+                while i < g.anim_n {
+                    if mem.get_int(g.anim_from, i * 20 + 8) == x && mem.get_int(g.anim_from, i * 20 + 12) == y {
+                        is_target = 1
+                    }
+                    i = i + 1
+                }
+                if is_target == 0 { draw_tile_at(g, cell_px(x), cell_px(y), v, TILE) }
+                y = y + 1
+            }
+            x = x + 1
+        }
+        t = (MOVE_FRAMES - g.anim_frame) * 1.0 / (MOVE_FRAMES * 1.0)
+        i = 0
+        while i < g.anim_n {
+            fx = mem.get_int(g.anim_from, i * 20)
+            fy = mem.get_int(g.anim_from, i * 20 + 4)
+            tx = mem.get_int(g.anim_from, i * 20 + 8)
+            ty = mem.get_int(g.anim_from, i * 20 + 12)
+            v = mem.get_int(g.anim_from, i * 20 + 16)
+            px = lrint(cell_px(fx) + (cell_px(tx) - cell_px(fx)) * t)
+            py = lrint(cell_px(fy) + (cell_px(ty) - cell_px(fy)) * t)
+            draw_tile_at(g, px, py, v, TILE)
+            i = i + 1
+        }
+    } else {
+        x = 0
+        while x < N {
+            y = 0
+            while y < N {
+                v = cell(g, x, y)
+                size = TILE
+                if g.pop_frame > 0 {
+                    i = 0
+                    while i < g.pop_n {
+                        if mem.get_int(g.pop_x, i * 8) == x && mem.get_int(g.pop_x, i * 8 + 4) == y {
+                            size = TILE - g.pop_frame * 6
+                        }
+                        i = i + 1
+                    }
+                }
+                draw_tile_at(g, cell_px(x), cell_px(y), v, size)
+                y = y + 1
+            }
+            x = x + 1
+        }
+    }
+    // compose board onto screen
+    o = core.opts_new()
+    core.geom_translate(core.opts_geom(o), (SCREEN_W - BOARD_PX) / 2.0, 160.0)
+    core.draw_image(screen, g.board_img, o)
+    core.opts_free(o)
+}
+
+dir_pressed(e: ptr) -> int {
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_LEFT) == 1 { return DIR_LEFT }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_A) == 1 { return DIR_LEFT }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_RIGHT) == 1 { return DIR_RIGHT }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_D) == 1 { return DIR_RIGHT }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_UP) == 1 { return DIR_UP }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_W) == 1 { return DIR_UP }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_DOWN) == 1 { return DIR_DOWN }
+    if ebiten.is_key_just_pressed(e, ebiten.KEY_S) == 1 { return DIR_DOWN }
+    return DIR_NONE
+}
+
+main() {
+    g = calloc(1, 128) as *Game
+    g.cells = calloc(N * N, 4)
+    g.anim_from = malloc(16 * 20)
+    g.pop_x = malloc(16 * 8)
+    g.seed = 20260824
+    g.font = util.debug_font_new()
+    g.board_img = core.image_new(BOARD_PX, BOARD_PX)
+    spawn_tile(g)
+    spawn_tile(g)
+    g.pop_frame = 0
+    g.pop_n = 0
+
+    e = ebiten.game_new(SCREEN_W, SCREEN_H)
+    ebiten.on_update(e) callback {
+        if g.anim_frame > 0 {
+            g.anim_frame = g.anim_frame - 1
+            if g.anim_frame == 0 && g.pop_n > 0 { g.pop_frame = POP_FRAMES }
+        } else {
+            if g.pop_frame > 0 { g.pop_frame = g.pop_frame - 1 }
+            d = dir_pressed(e)
+            if d != DIR_NONE && g.game_over == 0 { move(g, d) }
+            if can_move(g) == 0 { g.game_over = 1 }
+        }
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        core.image_fill(screen, 250, 248, 239, 255)
+        util.debug_print_scaled(g.font, screen, "2048",
+            SCREEN_W / 2.0, 30.0, 4.0, util.ALIGN_CENTER)
+        util.debug_print_scaled(g.font, screen, "SCORE: ${g.score}",
+            SCREEN_W / 2.0, 110.0, 1.5, util.ALIGN_CENTER)
+        draw_board(g, screen)
+        if g.game_over == 1 {
+            util.debug_print_scaled(g.font, screen, "GAME OVER",
+                SCREEN_W / 2.0, 540.0, 2.0, util.ALIGN_CENTER)
+        }
+    }
+    ebiten.run(e, "2048 (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+}

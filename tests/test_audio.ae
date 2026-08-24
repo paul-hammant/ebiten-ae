@@ -1,0 +1,54 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_audio.ae — audio mapping over std.audio (headless: transport +
+// volume + duration on a real Ebiten example asset).
+import ebiten.audio
+
+extern println(s: string)
+extern exit(code: int)
+
+main() {
+    if audio.context_new(48000) != 1 {
+        println("test_audio SKIP (no audio engine)")
+        return
+    }
+    p = audio.player_from_wav("examples/resources/audio/jab.wav")
+    if p == null {
+        println("FAIL: load jab.wav")
+        exit(1)
+    }
+    d = audio.player_duration_ms(p)
+    if d <= 0 {
+        println("FAIL: duration ${d}")
+        exit(1)
+    }
+    audio.player_set_volume(p, 0.5)
+    v = audio.player_volume(p)
+    if v < 0.45 || v > 0.55 {
+        println("FAIL: volume ${v}")
+        exit(1)
+    }
+    audio.player_play(p)
+    audio.player_pause(p)
+    audio.player_seek_ms(p, d / 2)
+    pos = audio.player_position_ms(p)
+    if pos <= 0 {
+        println("FAIL: position ${pos}")
+        exit(1)
+    }
+    audio.player_free(p)
+    audio.context_close()
+    println("test_audio OK (duration=${d}ms null_backend=${audio.is_null_backend()})")
+}

@@ -1,0 +1,118 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// polygons.ae — port of examples/polygons/main.go: an n-gon triangle fan
+// with rainbow per-vertex colors through DrawTriangles. The Go original's
+// debugui slider is replaced by Up/Down keys (1..120 vertices).
+//
+//   DISPLAY=:0 ./target/build/examples/polygons/bin/polygons
+
+import ebiten
+import ebiten.core
+import std.mem
+import std.math
+
+extern malloc(size: int) -> ptr
+
+const SCREEN_W: int = 640
+const SCREEN_H: int = 480
+const PI: float = 3.14159265358979
+const MAX_N: int = 120
+
+struct App {
+    white: ptr
+    verts: ptr      // (MAX_N + 1) vertices
+    idx: ptr        // MAX_N * 3 int32
+    ngon: int
+}
+
+gen_vertices(a: *App) {
+    n = a.ngon
+    cx = SCREEN_W / 2.0
+    cy = SCREEN_H / 2.0
+    r = 160.0
+    i = 0
+    while i < n {
+        rate = i * 1.0 / (n * 1.0)
+        cr = 0.0
+        cg = 0.0
+        cb = 0.0
+        if rate < 1.0 / 3.0 {
+            cb = 2.0 - 2.0 * rate * 3.0
+            cr = 2.0 * rate * 3.0
+        }
+        if rate >= 1.0 / 3.0 && rate < 2.0 / 3.0 {
+            cr = 2.0 - 2.0 * (rate - 1.0 / 3.0) * 3.0
+            cg = 2.0 * (rate - 1.0 / 3.0) * 3.0
+        }
+        if rate >= 2.0 / 3.0 {
+            cg = 2.0 - 2.0 * (rate - 2.0 / 3.0) * 3.0
+            cb = 2.0 * (rate - 2.0 / 3.0) * 3.0
+        }
+        core.vertex_set(a.verts, i,
+            r * math.cos(2.0 * PI * rate) + cx,
+            r * math.sin(2.0 * PI * rate) + cy,
+            1.0, 1.0, cr, cg, cb, 1.0)
+        i = i + 1
+    }
+    // center vertex, white
+    core.vertex_set(a.verts, n, cx, cy, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    // fan indices
+    i = 0
+    while i < n {
+        mem.set_int(a.idx, i * 12, i)
+        nxt = i + 1
+        if nxt == n { nxt = 0 }
+        mem.set_int(a.idx, i * 12 + 4, nxt)
+        mem.set_int(a.idx, i * 12 + 8, n)
+        i = i + 1
+    }
+}
+
+main() {
+    a = malloc(32) as *App
+    a.white = core.image_new(3, 3)
+    core.image_fill(a.white, 255, 255, 255, 255)
+    a.verts = malloc((MAX_N + 1) * 64)
+    a.idx = malloc(MAX_N * 12)
+    a.ngon = 8
+    gen_vertices(a)
+
+    e = ebiten.game_new(SCREEN_W, SCREEN_H)
+    ebiten.on_update(e) callback {
+        changed = 0
+        if ebiten.is_key_just_pressed(e, ebiten.KEY_UP) == 1 {
+            if a.ngon < MAX_N {
+                a.ngon = a.ngon + 1
+                changed = 1
+            }
+        }
+        if ebiten.is_key_just_pressed(e, ebiten.KEY_DOWN) == 1 {
+            if a.ngon > 1 {
+                a.ngon = a.ngon - 1
+                changed = 1
+            }
+        }
+        if changed == 1 { gen_vertices(a) }
+    }
+    ebiten.on_draw(e) callback |screen: ptr| {
+        core.image_fill(screen, 0, 0, 0, 255)
+        core.draw_triangles(screen, a.white, a.verts, a.ngon + 1,
+            a.idx, a.ngon * 3, null)
+        ebiten.debug_print(e, screen,
+            "Up/Down: change the vertices  N: ${a.ngon}  FPS: ${ebiten.actual_fps(e)}")
+    }
+    ebiten.run(e, "Polygons (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+}
