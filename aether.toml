@@ -1,0 +1,5 @@
+# Build config for the Aether engine (picked up by ae run / ae build / aeb).
+# -O2: the std.mem accessors lower to inline loads/stores (aether v0.578+),
+# and the pixel loops need the optimizer to exploit that.
+[build]
+cflags = "-O2"

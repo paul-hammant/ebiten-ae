@@ -53,8 +53,6 @@ aui_root(root: string) -> string {
 builder ebiten_backend(root: string) {
     sdk = sdk_prefix()
     aui = aui_root(root)
-    // The port's C pixel substrate (blit/fill inner loops).
-    extra_source("${root}/ebiten/aether_ebiten_blit.c")
     include_dir("${sdk}/include/aether/runtime")
     include_dir("${sdk}/include/aether/runtime/actors")
     include_dir("${sdk}/include/aether/std")

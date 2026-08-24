@@ -60,10 +60,6 @@ extern calloc(n: int, size: int) -> ptr
 extern malloc(size: int) -> ptr
 extern free(p: ptr)
 extern lrint(x: float) -> long
-// Pixel inner loops (ae/ebiten/aether_ebiten_blit.c — see its header).
-extern aether_ebiten_fill_rect(dst: ptr, stride: int, x0: int, y0: int, x1: int, y1: int, r: int, g: int, b: int, a: int)
-extern aether_ebiten_blit(dst: ptr, dst_stride: int, src: ptr, src_stride: int, sx0: int, sy0: int, sw: int, sh: int, px0: int, py0: int, px1: int, py1: int, ia: float, ib: float, ic: float, id_v: float, itx: float, ity: float, cr: float, cg: float, cb: float, ca: float, colorm20: ptr, sf_rgb: int, sf_a: int, df_rgb: int, df_a: int, lighter_clamp: int, filter_kind: int)
-extern aether_ebiten_copy_pixels(img: ptr, stride: int, x0: int, y0: int, w: int, h: int, buf: ptr, direction: int)
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -726,22 +722,33 @@ image_sub(p: ptr, x0: int, y0: int, x1: int, y1: int) -> ptr {
 // Overwrites (Ebiten Fill), including alpha.
 image_fill(p: ptr, r: int, g: int, b: int, a: int) {
     img = p as *Image
-    if a == 255 {
-        aether_ebiten_fill_rect(img.pix, img.stride, img.x0, img.y0,
-            img.x0 + img.w, img.y0 + img.h, r, g, b, a)
-        return
+    fill_region(img, img.x0, img.y0, img.x0 + img.w, img.y0 + img.h, r, g, b, a)
+}
+
+// Overwrite [x0,x1)x[y0,y1) (pre-clipped, root coords) with straight RGBA.
+// Row 0 is painted byte-wise, remaining rows copy it as int32s — the
+// accessors inline (aether >= the std.mem lowering), so this vectorizes.
+fill_region(img: *Image, x0: int, y0: int, x1: int, y1: int, r: int, g: int, b: int, a: int) {
+    if x1 <= x0 || y1 <= y0 { return }
+    row0 = (y0 * img.stride + x0) * 4
+    x = x0
+    off = row0
+    while x < x1 {
+        mem.set_byte(img.pix, off, r)
+        mem.set_byte(img.pix, off + 1, g)
+        mem.set_byte(img.pix, off + 2, b)
+        mem.set_byte(img.pix, off + 3, a)
+        off = off + 4
+        x = x + 1
     }
-    y = 0
-    while y < img.h {
-        row = ((img.y0 + y) * img.stride + img.x0) * 4
-        x = 0
-        while x < img.w {
-            off = row + x * 4
-            mem.set_byte(img.pix, off, r)
-            mem.set_byte(img.pix, off + 1, g)
-            mem.set_byte(img.pix, off + 2, b)
-            mem.set_byte(img.pix, off + 3, a)
-            x = x + 1
+    n = x1 - x0
+    y = y0 + 1
+    while y < y1 {
+        dst_row = (y * img.stride + x0) * 4
+        i = 0
+        while i < n {
+            mem.set_int(img.pix, dst_row + i * 4, mem.get_int(img.pix, row0 + i * 4))
+            i = i + 1
         }
         y = y + 1
     }
@@ -764,7 +771,39 @@ image_fill_rect(p: ptr, x: int, y: int, w: int, h: int, r: int, g: int, b: int, 
     if x1 > img.x0 + img.w { x1 = img.x0 + img.w }
     if y1 > img.y0 + img.h { y1 = img.y0 + img.h }
     if x1 <= x0 || y1 <= y0 { return }
-    aether_ebiten_fill_rect(img.pix, img.stride, x0, y0, x1, y1, r, g, b, a)
+    if a == 255 {
+        fill_region(img, x0, y0, x1, y1, r, g, b, a)
+        return
+    }
+    // Translucent: source-over per pixel.
+    saf = a / 255.0
+    srp = r / 255.0 * saf
+    sgp = g / 255.0 * saf
+    sbp = b / 255.0 * saf
+    om = 1.0 - saf
+    yy = y0
+    while yy < y1 {
+        off = (yy * img.stride + x0) * 4
+        xx = x0
+        while xx < x1 {
+            daf = mem.get_byte(img.pix, off + 3) / 255.0
+            dr = mem.get_byte(img.pix, off) / 255.0 * daf
+            dg = mem.get_byte(img.pix, off + 1) / 255.0 * daf
+            db = mem.get_byte(img.pix, off + 2) / 255.0 * daf
+            oa = saf + daf * om
+            if oa <= 0.0 {
+                mem.set_int(img.pix, off, 0)
+            } else {
+                mem.set_byte(img.pix, off, to_byte(clamp01((srp + dr * om) / oa)))
+                mem.set_byte(img.pix, off + 1, to_byte(clamp01((sgp + dg * om) / oa)))
+                mem.set_byte(img.pix, off + 2, to_byte(clamp01((sbp + db * om) / oa)))
+                mem.set_byte(img.pix, off + 3, to_byte(clamp01(oa)))
+            }
+            off = off + 4
+            xx = xx + 1
+        }
+        yy = yy + 1
+    }
 }
 
 // Set one pixel; x/y in the image's (root) coordinate space, as At/Set in Go.
@@ -796,13 +835,33 @@ image_at_a(p: ptr, x: int, y: int) -> int { return image_at_chan(p, x, y, 3) }
 // Copy the bounds region out as tightly-packed RGBA (w*h*4 bytes).
 image_read_pixels(p: ptr, out: ptr) {
     img = p as *Image
-    aether_ebiten_copy_pixels(img.pix, img.stride, img.x0, img.y0, img.w, img.h, out, 0)
+    y = 0
+    while y < img.h {
+        src_row = ((img.y0 + y) * img.stride + img.x0) * 4
+        dst_row = y * img.w * 4
+        i = 0
+        while i < img.w {
+            mem.set_int(out, dst_row + i * 4, mem.get_int(img.pix, src_row + i * 4))
+            i = i + 1
+        }
+        y = y + 1
+    }
 }
 
 // Overwrite the bounds region from tightly-packed RGBA (w*h*4 bytes).
 image_write_pixels(p: ptr, src: ptr) {
     img = p as *Image
-    aether_ebiten_copy_pixels(img.pix, img.stride, img.x0, img.y0, img.w, img.h, src, 1)
+    y = 0
+    while y < img.h {
+        dst_row = ((img.y0 + y) * img.stride + img.x0) * 4
+        src_row = y * img.w * 4
+        i = 0
+        while i < img.w {
+            mem.set_int(img.pix, dst_row + i * 4, mem.get_int(src, src_row + i * 4))
+            i = i + 1
+        }
+        y = y + 1
+    }
 }
 
 // ─── blend table ─────────────────────────────────────────────────────────────
@@ -1005,15 +1064,195 @@ draw_image(dstp: ptr, srcp: ptr, optsp: ptr) {
     is_lighter_clamp = 0
     if blend_mode == BLEND_LIGHTER { is_lighter_clamp = 1 }
 
-    cm20 = null
-    if cmp != null { cm20 = cmp }
+    // Fast path: pure integer translation, no ColorM, identity ColorScale,
+    // source-over, nearest — the tile-map workload. Opaque pixels copy as
+    // one int32; transparent skip; the rest source-over.
+    fast = 0
+    if filter_kind == FILTER_NEAREST && cmp == null && blend_mode == BLEND_SOURCE_OVER {
+        if ga == 1.0 && gb == 0.0 && gc == 0.0 && gd == 1.0 {
+            if cr == 1.0 && cg == 1.0 && cb == 1.0 && ca == 1.0 {
+                if gtx == math.floor(gtx) && gty == math.floor(gty) { fast = 1 }
+            }
+        }
+    }
+    if fast == 1 {
+        oxi = lrint(gtx)
+        oyi = lrint(gty)
+        py = py0
+        while py < py1 {
+            sj = py - oyi
+            if sj >= 0 && sj < src.h {
+                srow = ((src.y0 + sj) * src.stride + src.x0) * 4
+                drow = (py * dst.stride) * 4
+                px = px0
+                while px < px1 {
+                    si = px - oxi
+                    if si >= 0 && si < src.w {
+                        soff = srow + si * 4
+                        sa8 = mem.get_byte(src.pix, soff + 3)
+                        doff = drow + px * 4
+                        if sa8 == 255 {
+                            mem.set_int(dst.pix, doff, mem.get_int(src.pix, soff))
+                        } else {
+                            if sa8 != 0 {
+                                saf = sa8 / 255.0
+                                sr = mem.get_byte(src.pix, soff) / 255.0 * saf
+                                sg = mem.get_byte(src.pix, soff + 1) / 255.0 * saf
+                                sb = mem.get_byte(src.pix, soff + 2) / 255.0 * saf
+                                daf = mem.get_byte(dst.pix, doff + 3) / 255.0
+                                dr = mem.get_byte(dst.pix, doff) / 255.0 * daf
+                                dg = mem.get_byte(dst.pix, doff + 1) / 255.0 * daf
+                                db = mem.get_byte(dst.pix, doff + 2) / 255.0 * daf
+                                om = 1.0 - saf
+                                oa = saf + daf * om
+                                if oa <= 0.0 {
+                                    mem.set_int(dst.pix, doff, 0)
+                                } else {
+                                    mem.set_byte(dst.pix, doff, to_byte(clamp01((sr + dr * om) / oa)))
+                                    mem.set_byte(dst.pix, doff + 1, to_byte(clamp01((sg + dg * om) / oa)))
+                                    mem.set_byte(dst.pix, doff + 2, to_byte(clamp01((sb + db * om) / oa)))
+                                    mem.set_byte(dst.pix, doff + 3, to_byte(clamp01(oa)))
+                                }
+                            }
+                        }
+                    }
+                    px = px + 1
+                }
+            }
+            py = py + 1
+        }
+        return
+    }
 
-    aether_ebiten_blit(dst.pix, dst.stride,
-        src.pix, src.stride, src.x0, src.y0, src.w, src.h,
-        px0, py0, px1, py1,
-        ia, ib, ic, id, itx, ity,
-        cr, cg, cb, ca, cm20,
-        sf_rgb, sf_a, df_rgb, df_a, is_lighter_clamp, filter_kind)
+    // General path: inverse-transform sampling, nearest or bilinear,
+    // ColorM (straight alpha) then ColorScale (premultiplied), full blend
+    // factor table.
+    t0 = malloc(32)
+    t1 = malloc(32)
+    t2 = malloc(32)
+    t3 = malloc(32)
+    sw_f = src.w * 1.0
+    sh_f = src.h * 1.0
+    py = py0
+    while py < py1 {
+        cyf = py * 1.0 + 0.5
+        px = px0
+        while px < px1 {
+            cxf = px * 1.0 + 0.5
+            u = ia * cxf + ib * cyf + itx
+            v = ic * cxf + id * cyf + ity
+            if u >= 0.0 && u < sw_f && v >= 0.0 && v < sh_f {
+                sr = 0.0
+                sg = 0.0
+                sb = 0.0
+                sa = 0.0
+                if filter_kind == FILTER_NEAREST {
+                    si = floor_i(u)
+                    sj = floor_i(v)
+                    if si >= src.w { si = src.w - 1 }
+                    if sj >= src.h { sj = src.h - 1 }
+                    sample_texel(src, si, sj, t0)
+                    sr = mem.get_float64(t0, 0)
+                    sg = mem.get_float64(t0, 8)
+                    sb = mem.get_float64(t0, 16)
+                    sa = mem.get_float64(t0, 24)
+                } else {
+                    uf = u - 0.5
+                    vf = v - 0.5
+                    i0 = floor_i(uf)
+                    j0 = floor_i(vf)
+                    fu = uf - i0 * 1.0
+                    fv = vf - j0 * 1.0
+                    i1 = i0 + 1
+                    j1 = j0 + 1
+                    if i0 < 0 { i0 = 0 }
+                    if j0 < 0 { j0 = 0 }
+                    if i1 > src.w - 1 { i1 = src.w - 1 }
+                    if j1 > src.h - 1 { j1 = src.h - 1 }
+                    if i0 > src.w - 1 { i0 = src.w - 1 }
+                    if j0 > src.h - 1 { j0 = src.h - 1 }
+                    sample_texel(src, i0, j0, t0)
+                    sample_texel(src, i1, j0, t1)
+                    sample_texel(src, i0, j1, t2)
+                    sample_texel(src, i1, j1, t3)
+                    k = 0
+                    while k < 4 {
+                        o8 = k * 8
+                        v00 = mem.get_float64(t0, o8)
+                        v10 = mem.get_float64(t1, o8)
+                        v01 = mem.get_float64(t2, o8)
+                        v11 = mem.get_float64(t3, o8)
+                        top = v00 + (v10 - v00) * fu
+                        bot = v01 + (v11 - v01) * fu
+                        val = top + (bot - top) * fv
+                        if k == 0 { sr = val }
+                        if k == 1 { sg = val }
+                        if k == 2 { sb = val }
+                        if k == 3 { sa = val }
+                        k = k + 1
+                    }
+                }
+
+                // ColorM applies to STRAIGHT-alpha colors.
+                if cmp != null {
+                    str_r = 0.0
+                    str_g = 0.0
+                    str_b = 0.0
+                    if sa > 0.0 {
+                        str_r = sr / sa
+                        str_g = sg / sa
+                        str_b = sb / sa
+                    }
+                    nr = colorm_apply_chan(cmp, str_r, str_g, str_b, sa, 0)
+                    ng = colorm_apply_chan(cmp, str_r, str_g, str_b, sa, 1)
+                    nb = colorm_apply_chan(cmp, str_r, str_g, str_b, sa, 2)
+                    na = colorm_apply_chan(cmp, str_r, str_g, str_b, sa, 3)
+                    sa = clamp01(na)
+                    sr = clamp01(nr) * sa
+                    sg = clamp01(ng) * sa
+                    sb = clamp01(nb) * sa
+                }
+
+                // ColorScale (premultiplied domain).
+                sr = sr * cr
+                sg = sg * cg
+                sb = sb * cb
+                sa = sa * ca
+
+                doff = (py * dst.stride + px) * 4
+                daf = mem.get_byte(dst.pix, doff + 3) / 255.0
+                dr = mem.get_byte(dst.pix, doff) / 255.0 * daf
+                dg = mem.get_byte(dst.pix, doff + 1) / 255.0 * daf
+                db = mem.get_byte(dst.pix, doff + 2) / 255.0 * daf
+
+                out_r = sr * fac(sf_rgb, sr, sa, dr, daf) + dr * fac(df_rgb, sr, sa, dr, daf)
+                out_g = sg * fac(sf_rgb, sg, sa, dg, daf) + dg * fac(df_rgb, sg, sa, dg, daf)
+                out_b = sb * fac(sf_rgb, sb, sa, db, daf) + db * fac(df_rgb, sb, sa, db, daf)
+                out_a = sa * fac(sf_a, sa, sa, daf, daf) + daf * fac(df_a, sa, sa, daf, daf)
+                if is_lighter_clamp == 1 {
+                    out_r = clamp01(out_r)
+                    out_g = clamp01(out_g)
+                    out_b = clamp01(out_b)
+                    out_a = clamp01(out_a)
+                }
+                if out_a <= 0.0 {
+                    mem.set_int(dst.pix, doff, 0)
+                } else {
+                    oa = clamp01(out_a)
+                    mem.set_byte(dst.pix, doff, to_byte(clamp01(out_r / oa)))
+                    mem.set_byte(dst.pix, doff + 1, to_byte(clamp01(out_g / oa)))
+                    mem.set_byte(dst.pix, doff + 2, to_byte(clamp01(out_b / oa)))
+                    mem.set_byte(dst.pix, doff + 3, to_byte(oa))
+                }
+            }
+            px = px + 1
+        }
+        py = py + 1
+    }
+    free(t0)
+    free(t1)
+    free(t2)
+    free(t3)
 }
 
 // ─── DrawTriangles (software barycentric rasterizer) ─────────────────────────

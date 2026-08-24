@@ -16,15 +16,17 @@ mobile/js/playstation5 glue — is **not ported**. aether-ui replaces it:
 - **Every `ebiten.Image` is a CPU-side RGBA8888 buffer.** `DrawImage` is a
   software blit: inverse-affine sampling (GeoM), ColorScale in premultiplied
   domain, ColorM in straight-alpha domain, full blend-factor table, nearest +
-  linear filters. All engine logic (matrices, options, clipping, blend
-  tables) is Aether; the per-pixel inner loops live in one C file
-  (`ebiten/aether_ebiten_blit.c`) for the same reason std.audio's device
-  pull and aether-ui's canvas primitives are C — measured 235x on the
-  tile-map workload (141ms → 0.6ms per 300-tile frame), 7x on rotated
-  blits (27ms → 3.8ms per rotated 320×240 frame). The C file is intended to
-  be temporary: aether-lang-dev/aether#1733 asks for codegen-inlined
-  `std.mem` accessors + an offset bulk copy, after which these loops fold
-  back into pure Aether behind the existing tests.
+  linear filters. **100% Aether, including the per-pixel inner loops.**
+  History: on aether v0.545 the accessor-call overhead forced those loops
+  into a temporary C file (141ms → 0.6ms per 300-tile frame); the
+  aether#1733 ask got the `std.mem` scalar accessors codegen-inlined, and
+  with the repo's `aether.toml` pinning `-O2` the pure-Aether loops now
+  measure 0.8ms/frame on that workload and 4.1ms on a rotated 320×240
+  bilinear blit — parity with the deleted C, inside the 16ms budget with
+  room to spare. (Ask 2 of #1733 — offset bulk copy/fill — would buy the
+  last fraction via row memcpy, but per-pixel int32 copies at `-O2`
+  already vectorize to parity; it is no longer load-bearing for this
+  port.)
 - **The screen is one such Image**, pushed to an aether-ui canvas each frame
   (`canvas_draw_image_ptr` / `vg.live` video_region) on a `ui.timer` tick.
 - **Game loop**: fixed-TPS `update` accumulator (60Hz, `std.os`

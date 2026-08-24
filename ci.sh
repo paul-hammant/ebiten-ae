@@ -11,7 +11,7 @@ FAIL=0
 
 echo "=== Phase 0: headless unit tests ==="
 for t in test_core test_png test_util test_vector test_audio; do
-    if ae run --extra ebiten/aether_ebiten_blit.c "tests/${t}.ae" > "/tmp/ci_ae_${t}.log" 2>&1; then
+    if ae run "tests/${t}.ae" > "/tmp/ci_ae_${t}.log" 2>&1; then
         echo "  PASS ${t}: $(tail -1 /tmp/ci_ae_${t}.log)"
     else
         echo "  FAIL ${t} (see /tmp/ci_ae_${t}.log)"

@@ -14,7 +14,7 @@
 
 // test_png.ae — decode ebitenutil/text.png (the DebugPrint font sheet) and
 // check dims + ground-truth pixels (reference values from PIL).
-//   ae run --extra ebiten/aether_ebiten_blit.c tests/test_png.ae
+//   ae run tests/test_png.ae
 
 import ebiten.core
 import ebiten.png

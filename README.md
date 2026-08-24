@@ -15,8 +15,8 @@ Hajime Hoshi and The Ebiten Authors — see [`NOTICE.md`](NOTICE.md).
 ## Layout
 
 - `ebiten/core.ae` — pure drawing core: GeoM, ColorScale, ColorM, blend
-  table, Image + DrawImage/DrawTriangles. Headless, no ui dependency.
-- `ebiten/aether_ebiten_blit.c` — the per-pixel inner loops (C substrate).
+  table, Image + DrawImage/DrawTriangles, and the per-pixel loops.
+  Headless, no ui dependency — the whole engine is Aether.
 - `ebiten/png.ae` — PNG decoder (std.zlib inflate).
 - `ebiten/util.ae` — ebitenutil: DebugPrint bitmap font (embedded), scaled text.
 - `ebiten/vector.ae` — vector: primitives + scanline path fill.
@@ -35,13 +35,16 @@ aeb examples/snake            # or one example
 ./target/build/examples/snake/bin/snake
 
 # tests (headless, from the repo root):
-ae run --extra ebiten/aether_ebiten_blit.c tests/test_core.ae
+ae run tests/test_core.ae
 
 ./ci.sh                       # the whole gate: tests + builds + driver smoke
 ```
 
 Needs a sibling `../aether-ui` checkout (or `AETHER_UI_ROOT`) at or after
-commit `ad960a8` (`canvas_on_key_release` + `canvas_draw_image_scaled_ptr`).
+commit `ad960a8` (`canvas_on_key_release` + `canvas_draw_image_scaled_ptr`),
+and an aether toolchain with the inlined `std.mem` accessors (the post-0.578
+build; aether#1733). The repo's `aether.toml` pins `-O2` — the pixel loops
+need the optimizer to exploit the inlined accessors.
 
 ## Writing a game
 

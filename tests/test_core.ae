@@ -14,7 +14,7 @@
 
 // test_core.ae — headless parity tests for ae/ebiten/core.ae
 // (GeoM vs geom.go, blitter vs DrawImage semantics). Run from the repo root:
-//   ae run --extra ebiten/aether_ebiten_blit.c tests/test_core.ae
+//   ae run tests/test_core.ae
 
 import ebiten.core
 import std.math
