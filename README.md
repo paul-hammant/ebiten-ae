@@ -23,9 +23,29 @@ The complete, unmodified Go implementation lives on
 which tracks upstream
 [hajimehoshi/ebiten](https://github.com/hajimehoshi/ebiten). It is the
 porting oracle: behaviour questions are settled by reading (or running)
-the Go, and anything not yet in the status table is found there. Nothing
-from it is deleted — `main` and `legacy_golang` are two implementations
-of the same engine, one repository apart.
+the Go, and anything not yet in the status table is found there.
+
+## How the branches diverge
+
+The two branches are not mirror images, and the gaps are deliberate:
+
+- **API shape.** This branch is idiomatic Aether, not a transliteration.
+  The concepts and names carry over (GeoM, DrawImage, ColorM, DebugPrint,
+  just-pressed input, fixed-TPS update), but where Go has interfaces and
+  methods, Aether has handles plus the trailing-block builder DSL
+  (`ebiten.game { }`, `core.draw { }`). Code does not port line-for-line
+  between the branches; behaviour does.
+- **Feature coverage.** Some upstream subsystems are deliberately absent
+  here — Kage shaders, gamepad/touch/mobile/JS targets, TTF text so far —
+  and some things exist only here (the software compositor itself). The
+  authoritative list is the status table in
+  [`AE-MIGRATION.md`](AE-MIGRATION.md).
+- **Time.** `legacy_golang` follows upstream, which keeps moving; `main`
+  forked at a fixed upstream commit and adopts later upstream changes
+  case by case, not automatically (upstream's `ScreenSize` addition, for
+  example, postdates the fork and is not yet ported). A behaviour
+  difference against the *tip* of the Go branch may simply be an upstream
+  change the port hasn't chosen to chase yet.
 
 ## Layout
 
