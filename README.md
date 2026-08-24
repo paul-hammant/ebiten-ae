@@ -1,16 +1,31 @@
 # Ebiten, in Aether
 
-An [Aether](https://github.com/aether-lang-dev/aether)-language port of
-[Ebitengine](https://ebitengine.org) ("Ebiten"), Hajime Hoshi's 2D game
-engine — rendering through
-[aether-ui](https://github.com/aether-lang-dev/aether-ui) (GTK4 / AppKit /
-Win32) instead of the original GLFW + OpenGL/Metal/DirectX stack.
+A 2D game engine written in
+[Aether](https://github.com/aether-lang-dev/aether), rendering through
+[aether-ui](https://github.com/aether-lang-dev/aether-ui)'s canvas
+(GTK4 / AppKit / Win32). Games are `.ae` programs: a fixed-60-TPS
+`on_update`, a per-frame `on_draw` against a software-composited
+framebuffer, sprite images with affine transforms, color matrices, blend
+modes, paths, bitmap text, and audio. This branch is Aether end to end —
+there is no Go on it, and no GPU dependency.
 
-The original Go implementation is preserved intact on the
-[`legacy_golang`](../../tree/legacy_golang) branch and serves as the porting
-oracle. Architecture, status table, and what is/isn't ported:
-[`AE-MIGRATION.md`](AE-MIGRATION.md). License: Apache 2.0, portions copyright
-Hajime Hoshi and The Ebiten Authors — see [`NOTICE.md`](NOTICE.md).
+The engine's design and API lineage come from
+[Ebitengine](https://ebitengine.org) ("Ebiten"), Hajime Hoshi's Go engine.
+License: Apache 2.0, portions copyright Hajime Hoshi and The Ebiten
+Authors — see [`NOTICE.md`](NOTICE.md). Architecture, status table, and
+what is deliberately not carried over:
+[`AE-MIGRATION.md`](AE-MIGRATION.md).
+
+## The legacy Go branch
+
+The complete, unmodified Go implementation lives on
+[`legacy_golang`](https://github.com/paul-hammant/ebiten-ae/tree/legacy_golang),
+which tracks upstream
+[hajimehoshi/ebiten](https://github.com/hajimehoshi/ebiten). It is the
+porting oracle: behaviour questions are settled by reading (or running)
+the Go, and anything not yet in the status table is found there. Nothing
+from it is deleted — `main` and `legacy_golang` are two implementations
+of the same engine, one repository apart.
 
 ## Layout
 
