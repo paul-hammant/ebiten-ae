@@ -31,6 +31,7 @@
 
 exports (
     game_new, on_update, on_draw, run, screen_of, set_scale,
+    game, engine_shell, window_scale, update, draw, title_margin_w, title_margin_h,
     debug_print, debug_print_at, actual_fps,
     is_key_pressed, is_key_just_pressed, is_key_just_released,
     cursor_x, cursor_y,
@@ -234,6 +235,8 @@ struct Engine {
     fps_win_start: long
     fps_val: float
     scale: float
+    update_fn_e: ptr
+    draw_fn_e: ptr
 }
 
 game_new(logical_w: int, logical_h: int) -> ptr {
@@ -406,6 +409,8 @@ debug_print(ep: ptr, dst: ptr, str: string) {
 
 call_update(cb: fn) { cb() }
 call_draw(cb: fn, screen: ptr) { cb(screen) }
+call_update_e(cb: fn, e: ptr) { cb(e) }
+call_draw_e(cb: fn, e: ptr, screen: ptr) { cb(e, screen) }
 
 // Rendered frames per second over the last ~1s window (ActualFPS).
 actual_fps(ep: ptr) -> float {
@@ -431,6 +436,7 @@ frame(ep: ptr) {
     while e.acc >= TICK_MS && steps < MAX_CATCHUP_TICKS {
         begin_tick(e)
         if e.update_fn != null { call_update(e.update_fn) }
+        if e.update_fn_e != null { call_update_e(e.update_fn_e, ep) }
         e.acc = e.acc - TICK_MS
         e.ticks = e.ticks + 1
         steps = steps + 1
@@ -439,6 +445,7 @@ frame(ep: ptr) {
     // clock does the same) rather than spiralling.
     if e.acc >= TICK_MS { e.acc = 0.0 }
     if e.draw_fn != null { call_draw(e.draw_fn, e.screen) }
+    if e.draw_fn_e != null { call_draw_e(e.draw_fn_e, ep, e.screen) }
     present(e)
 }
 
@@ -456,6 +463,62 @@ present(e: *Engine) {
             core.image_pix_ptr(e.screen), e.logical_w * e.logical_h * 4)
     }
     ui.canvas_redraw(c)
+}
+
+// ─── the game block: declarative top level ───────────────────────────────────
+// The builder-DSL face of game_new + on_update + on_draw + run:
+//
+//   ebiten.game("Snake", 640, 480) {
+//       window_scale(2.0)
+//       update callback |e: ptr| { ... }
+//       draw callback |e: ptr, screen: ptr| { ... }
+//   }
+//
+// The block fills a fresh engine (the `with engine_shell` factory); the
+// function then finishes construction and runs — so registration reads as
+// configuration, and the engine handle arrives as the callbacks' first
+// argument instead of being threaded by hand.
+
+// Zero-arg factory for the builder: an engine with defaults and no screen
+// yet (game() supplies the logical size and creates it).
+engine_shell() -> ptr {
+    e = calloc(1, 256) as *Engine
+    e.update_fn = null
+    e.draw_fn = null
+    e.update_fn_e = null
+    e.draw_fn_e = null
+    e.keys_now = calloc(KEY_MAX, 1)
+    e.keys_tick = calloc(KEY_MAX, 1)
+    e.keys_prev = calloc(KEY_MAX, 1)
+    e.scale = 1.0
+    return e as ptr
+}
+
+window_scale(_ctx: ptr, s: float) { set_scale(_ctx, s) }
+
+update(_ctx: ptr, cb: fn) {
+    e = _ctx as *Engine
+    e.update_fn_e = cb
+}
+
+draw(_ctx: ptr, cb: fn) {
+    e = _ctx as *Engine
+    e.draw_fn_e = cb
+}
+
+// Window chrome allowance around the scaled canvas (matches the hand-run
+// examples' margins).
+title_margin_w() -> int { return 20 }
+title_margin_h() -> int { return 40 }
+
+builder game(title_text: string, logical_w: int, logical_h: int) with engine_shell {
+    e = _builder as *Engine
+    e.logical_w = logical_w
+    e.logical_h = logical_h
+    e.screen = core.image_new(logical_w, logical_h)
+    win_w = lrint(logical_w * e.scale) + title_margin_w()
+    win_h = lrint(logical_h * e.scale) + title_margin_h()
+    run(_builder, title_text, win_w, win_h)
 }
 
 // Run the game: opens the window, wires input, starts the ~60Hz frame timer,

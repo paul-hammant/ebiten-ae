@@ -153,7 +153,7 @@ jump_pressed(e: ptr) -> int {
     return ebiten.is_mouse_button_just_pressed(e, ebiten.MOUSE_BUTTON_LEFT)
 }
 
-update(e: ptr, g: *Game) {
+step(e: ptr, g: *Game) {
     if g.mode == MODE_TITLE {
         if jump_pressed(e) == 1 { g.mode = MODE_GAME }
         return
@@ -259,7 +259,7 @@ pad4(v: int) -> string {
     return "000${v}"
 }
 
-draw(e: ptr, screen: ptr, g: *Game) {
+render(e: ptr, screen: ptr, g: *Game) {
     core.image_fill(screen, 128, 160, 192, 255)
     draw_tiles(g, screen)
     if g.mode != MODE_TITLE { draw_gopher(g, screen) }
@@ -304,12 +304,8 @@ main() {
     reset(g)
     g.mode = MODE_TITLE
 
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback {
-        update(e, g)
+    ebiten.game("Flappy Gopher (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
+        update() callback |e: ptr| { step(e, g) }
+        draw() callback |e: ptr, screen: ptr| { render(e, screen, g) }
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
-        draw(e, screen, g)
-    }
-    ebiten.run(e, "Flappy Gopher (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

@@ -63,24 +63,42 @@ need the optimizer to exploit the inlined accessors.
 
 ## Writing a game
 
+The surface is Aether's trailing-block builder DSL ("config IS code"):
+the `game` block registers the loop, the `draw` block builds a DrawImage's
+options — no handles threaded, no option objects created or freed by hand.
+
 ```aether
 import ebiten
 import ebiten.core
 
 main() {
-    e = ebiten.game_new(320, 240)          // logical size
-    ebiten.set_scale(e, 2.0)               // optional window upscale
-    ebiten.on_update(e) callback {          // 60 TPS fixed step
-        if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { ... }
+    ebiten.game("Title", 320, 240) {           // logical size; runs on block end
+        window_scale(2.0)                       // optional window upscale
+        update() callback |e: ptr| {            // 60 TPS fixed step
+            if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { ... }
+        }
+        draw() callback |e: ptr, screen: ptr| { // per frame
+            core.image_fill(screen, 0, 0, 0, 255)
+            core.draw(screen, sprite) {         // options as a block
+                translate(0.0 - 8.0, 0.0 - 8.0)
+                rotate(theta)
+                translate(x, y)
+                linear()
+                opacity(0.5)
+            }
+            ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+        }
     }
-    ebiten.on_draw(e) callback |screen: ptr| {   // per frame
-        core.image_fill(screen, 0, 0, 0, 255)
-        core.draw_image(screen, sprite, opts)
-        ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
-    }
-    ebiten.run(e, "Title", 660, 520)       // blocks until close
 }
 ```
+
+The explicit-handle API (`game_new` / `on_update` / `on_draw` / `run`,
+`opts_new` + `geom_*`) remains — six of the nine examples still use it;
+snake, flappy, and rotate show the DSL form. One naming rule: inside
+`ebiten.*` / `core.*` trailing blocks, bare names resolve to the module's
+DSL setters before your file's functions — name your own tick/paint
+functions something other than `update`/`draw` (the ports use
+`step`/`render`).
 
 Driver testing: run with `AETHER_UI_TEST_PORT=<port>` and use the standard
 AetherUIDriver routes — `POST /canvas/1/key?name=Left`, `/keyup`, `/click`,

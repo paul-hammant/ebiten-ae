@@ -140,7 +140,7 @@ steer(e: ptr, g: *Game) {
     if ebiten.is_key_just_pressed(e, ebiten.KEY_ESCAPE) == 1 { reset(g) }
 }
 
-update(e: ptr, g: *Game) {
+step(e: ptr, g: *Game) {
     steer(e, g)
 
     if g.timer % g.move_time == 0 {
@@ -185,7 +185,7 @@ update(e: ptr, g: *Game) {
     g.timer = g.timer + 1
 }
 
-draw(e: ptr, screen: ptr, g: *Game) {
+render(e: ptr, screen: ptr, g: *Game) {
     core.image_fill(screen, 0, 0, 0, 255)
     i = 0
     while i < g.body_len {
@@ -207,12 +207,8 @@ draw(e: ptr, screen: ptr, g: *Game) {
 
 main() {
     g = game_make()
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback {
-        update(e, g)
+    ebiten.game("Snake (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
+        update() callback |e: ptr| { step(e, g) }
+        draw() callback |e: ptr, screen: ptr| { render(e, screen, g) }
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
-        draw(e, screen, g)
-    }
-    ebiten.run(e, "Snake (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

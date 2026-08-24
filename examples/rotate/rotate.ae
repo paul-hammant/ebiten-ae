@@ -41,22 +41,19 @@ main() {
     }
     sw = core.image_w(img)
     sh = core.image_h(img)
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback { }
-    ebiten.on_draw(e) callback |screen: ptr| {
-        core.image_fill(screen, 32, 32, 48, 255)
-        o = core.opts_new()
-        g = core.opts_geom(o)
-        // center to origin (at 4x), rotate by tick degrees, recenter
-        core.geom_scale(g, 4.0, 4.0)
-        core.geom_translate(g, 0.0 - sw * 2.0, 0.0 - sh * 2.0)
-        deg = ebiten.tick_count(e) % 360
-        core.geom_rotate(g, deg * 2.0 * PI / 360.0)
-        core.geom_translate(g, SCREEN_W / 2.0, SCREEN_H / 2.0)
-        core.opts_set_filter(o, core.FILTER_LINEAR)
-        core.draw_image(screen, img, o)
-        core.opts_free(o)
-        ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+    ebiten.game("Rotate (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
+        draw() callback |e: ptr, screen: ptr| {
+            core.image_fill(screen, 32, 32, 48, 255)
+            deg = ebiten.tick_count(e) % 360
+            // scale 4x about the image center, spin, park at screen center
+            core.draw(screen, img) {
+                scale(4.0, 4.0)
+                translate(0.0 - sw * 2.0, 0.0 - sh * 2.0)
+                rotate(deg * 2.0 * PI / 360.0)
+                translate(SCREEN_W / 2.0, SCREEN_H / 2.0)
+                linear()
+            }
+            ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+        }
     }
-    ebiten.run(e, "Rotate (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

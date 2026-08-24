@@ -50,7 +50,9 @@ exports (
     image_fill, image_fill_rect, image_clear, image_set,
     image_at_r, image_at_g, image_at_b, image_at_a,
     image_read_pixels, image_write_pixels,
-    draw_image, draw_triangles, vertex_set
+    draw_image, draw_triangles, vertex_set,
+    draw, translate, scale, rotate, skew, opacity, tint, blend, linear,
+    nearest, color_matrix
 )
 
 import std.math
@@ -1390,3 +1392,35 @@ draw_triangles(dstp: ptr, srcp: ptr, verts: ptr, n_verts: int,
     }
     free(t0)
 }
+
+// ─── the draw block: "config IS code" for DrawImage ──────────────────────────
+// The builder-DSL face of draw_image. The trailing block fills a fresh Opts
+// (the `with opts_new` factory); the function then draws and frees it:
+//
+//   core.draw(screen, sprite) {
+//       translate(0.0 - w / 2.0, 0.0 - h / 2.0)
+//       rotate(theta)
+//       translate(cx, cy)
+//       linear()
+//       opacity(0.5)
+//   }
+//
+// Zero-config (`core.draw(screen, sprite)`) is DrawImage with nil options.
+// Setters are plain _ctx functions, so they also compose with an explicit
+// opts handle outside the block.
+
+builder draw(dst: ptr, src: ptr) with opts_new {
+    draw_image(dst, src, _builder)
+    if _builder != null { opts_free(_builder) }
+}
+
+translate(_ctx: ptr, x: float, y: float) { geom_translate(opts_geom(_ctx), x, y) }
+scale(_ctx: ptr, x: float, y: float) { geom_scale(opts_geom(_ctx), x, y) }
+rotate(_ctx: ptr, theta: float) { geom_rotate(opts_geom(_ctx), theta) }
+skew(_ctx: ptr, sx: float, sy: float) { geom_skew(opts_geom(_ctx), sx, sy) }
+opacity(_ctx: ptr, a: float) { opts_color_scale_alpha(_ctx, a) }
+tint(_ctx: ptr, r: float, g: float, b: float, a: float) { opts_color_scale(_ctx, r, g, b, a) }
+blend(_ctx: ptr, mode: int) { opts_set_blend(_ctx, mode) }
+linear(_ctx: ptr) { opts_set_filter(_ctx, FILTER_LINEAR) }
+nearest(_ctx: ptr) { opts_set_filter(_ctx, FILTER_NEAREST) }
+color_matrix(_ctx: ptr, cm: ptr) { opts_set_colorm(_ctx, cm) }
