@@ -21,7 +21,10 @@ mobile/js/playstation5 glue — is **not ported**. aether-ui replaces it:
   (`ebiten/aether_ebiten_blit.c`) for the same reason std.audio's device
   pull and aether-ui's canvas primitives are C — measured 235x on the
   tile-map workload (141ms → 0.6ms per 300-tile frame), 7x on rotated
-  blits (27ms → 3.8ms per rotated 320×240 frame).
+  blits (27ms → 3.8ms per rotated 320×240 frame). The C file is intended to
+  be temporary: aether-lang-dev/aether#1733 asks for codegen-inlined
+  `std.mem` accessors + an offset bulk copy, after which these loops fold
+  back into pure Aether behind the existing tests.
 - **The screen is one such Image**, pushed to an aether-ui canvas each frame
   (`canvas_draw_image_ptr` / `vg.live` video_region) on a `ui.timer` tick.
 - **Game loop**: fixed-TPS `update` accumulator (60Hz, `std.os`
