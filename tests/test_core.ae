@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// test_core.ae — headless parity tests for ae/ebiten/core.ae
+// test_core.ae — headless parity tests for ae/aebiten/core.ae
 // (GeoM vs geom.go, blitter vs DrawImage semantics). Run from the repo root:
 //   ae run tests/test_core.ae
 
-import ebiten.core
+import aebiten.core
 import std.math
 import std.mem
 

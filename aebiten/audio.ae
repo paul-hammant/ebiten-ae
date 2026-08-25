@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/audio.ae — the audio package mapped onto std.audio.
+// ae/aebiten/audio.ae — the audio package mapped onto std.audio.
 //
 // Ebiten shape: a Context (one per game, fixed sample rate) makes Players;
 // players play/pause/rewind/seek and carry a volume. std.audio v1 decodes
@@ -34,7 +34,7 @@ exports (
 import std.audio
 import std.fs
 
-// This module is also named `audio` (ebiten.audio), so an unqualified
+// This module is also named `audio` (aebiten.audio), so an unqualified
 // `audio.<name>` that exists in BOTH modules resolves to THIS module —
 // self-recursion. Same-named wrappers therefore call the C externs directly.
 extern aether_audio_is_null_backend() -> int

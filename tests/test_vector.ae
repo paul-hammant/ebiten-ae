@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // test_vector.ae — vector primitives + scanline path fill.
-import ebiten.core
-import ebiten.vector
+import aebiten.core
+import aebiten.vector
 
 extern println(s: string)
 extern exit(code: int)

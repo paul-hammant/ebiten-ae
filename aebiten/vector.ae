@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/vector.ae — the vector package: stroke/fill primitives and a
+// ae/aebiten/vector.ae — the vector package: stroke/fill primitives and a
 // scanline path rasterizer over core images (replaces vector's triangle
 // tessellation; no GPU here). Non-antialiased v1 (Ebiten's antialias flag is
 // accepted conceptually but ignored).
@@ -29,7 +29,7 @@ exports (
     fill_path, FILL_RULE_NON_ZERO, FILL_RULE_EVEN_ODD
 )
 
-import ebiten.core
+import aebiten.core
 import std.math
 import std.mem
 

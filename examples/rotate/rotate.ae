@@ -21,9 +21,9 @@
 // Run from the repo root (asset path is root-relative):
 //   DISPLAY=:0 ./target/build/examples/rotate/bin/rotate
 
-import ebiten
-import ebiten.core
-import ebiten.png
+import aebiten
+import aebiten.core
+import aebiten.png
 import std.math
 
 extern println(s: string)
@@ -41,10 +41,10 @@ main() {
     }
     sw = core.image_w(img)
     sh = core.image_h(img)
-    ebiten.game("Rotate (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
+    aebiten.game("Rotate (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
         draw() callback |e: ptr, screen: ptr| {
             core.image_fill(screen, 32, 32, 48, 255)
-            deg = ebiten.tick_count(e) % 360
+            deg = aebiten.tick_count(e) % 360
             // scale 4x about the image center, spin, park at screen center
             core.draw(screen, img) {
                 scale(4.0, 4.0)
@@ -53,7 +53,7 @@ main() {
                 translate(SCREEN_W / 2.0, SCREEN_H / 2.0)
                 linear()
             }
-            ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+            aebiten.debug_print(e, screen, "FPS: ${aebiten.actual_fps(e)}")
         }
     }
 }

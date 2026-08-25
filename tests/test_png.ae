@@ -16,8 +16,8 @@
 // check dims + ground-truth pixels (reference values from PIL).
 //   ae run tests/test_png.ae
 
-import ebiten.core
-import ebiten.png
+import aebiten.core
+import aebiten.png
 
 extern println(s: string)
 extern exit(code: int)

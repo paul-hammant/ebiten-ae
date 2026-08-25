@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // test_util.ae — debug font decode + DebugPrint glyph rendering.
-import ebiten.core
-import ebiten.util
+import aebiten.core
+import aebiten.util
 
 extern println(s: string)
 extern exit(code: int)

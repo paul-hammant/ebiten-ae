@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/png.ae — minimal PNG decoder for asset loading (replaces
+// ae/aebiten/png.ae — minimal PNG decoder for asset loading (replaces
 // internal/png's role for the port; not a full codec).
 //
 // Supports: 8-bit depth, color types 0 (gray), 2 (RGB), 3 (palette, with
 // optional tRNS), 4 (gray+alpha), 6 (RGBA); all five scanline filters;
 // non-interlaced only. CRCs are not verified (assets are trusted local
-// files). Output is an ebiten.core image handle (straight RGBA8888).
+// files). Output is an aebiten.core image handle (straight RGBA8888).
 //
 // IDAT inflation goes through std.zlib; file reading through std.fs's
 // binary split-accessor pair.
@@ -27,7 +27,7 @@ exports (
     png_decode, png_load
 )
 
-import ebiten.core
+import aebiten.core
 import std.mem
 import std.zlib
 import std.fs

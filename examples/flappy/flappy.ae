@@ -29,11 +29,11 @@
 // Run from the repo root:
 //   DISPLAY=:0 ./target/build/examples/flappy/bin/flappy
 
-import ebiten
-import ebiten.core
-import ebiten.png
-import ebiten.util
-import ebiten.audio
+import aebiten
+import aebiten.core
+import aebiten.png
+import aebiten.util
+import aebiten.audio
 import std.mem
 import std.math
 
@@ -149,8 +149,8 @@ hit(g: *Game) -> int {
 }
 
 jump_pressed(e: ptr) -> int {
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { return 1 }
-    return ebiten.is_mouse_button_just_pressed(e, ebiten.MOUSE_BUTTON_LEFT)
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_SPACE) == 1 { return 1 }
+    return aebiten.is_mouse_button_just_pressed(e, aebiten.MOUSE_BUTTON_LEFT)
 }
 
 step(e: ptr, g: *Game) {
@@ -281,7 +281,7 @@ render(e: ptr, screen: ptr, g: *Game) {
     }
     util.debug_print_scaled(g.font, screen, pad4(score(g)),
         SCREEN_W * 1.0, 4.0, 2.0, util.ALIGN_RIGHT)
-    ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+    aebiten.debug_print(e, screen, "FPS: ${aebiten.actual_fps(e)}")
 }
 
 main() {
@@ -304,7 +304,7 @@ main() {
     reset(g)
     g.mode = MODE_TITLE
 
-    ebiten.game("Flappy Gopher (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
+    aebiten.game("Flappy Gopher (Ebitengine Demo)", SCREEN_W, SCREEN_H) {
         update() callback |e: ptr| { step(e, g) }
         draw() callback |e: ptr, screen: ptr| { render(e, screen, g) }
     }

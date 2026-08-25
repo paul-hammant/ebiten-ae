@@ -19,8 +19,8 @@
 //
 //   DISPLAY=:0 ./target/build/examples/polygons/bin/polygons
 
-import ebiten
-import ebiten.core
+import aebiten
+import aebiten.core
 import std.mem
 import std.math
 
@@ -90,16 +90,16 @@ main() {
     a.ngon = 8
     gen_vertices(a)
 
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback {
+    e = aebiten.game_new(SCREEN_W, SCREEN_H)
+    aebiten.on_update(e) callback {
         changed = 0
-        if ebiten.is_key_just_pressed(e, ebiten.KEY_UP) == 1 {
+        if aebiten.is_key_just_pressed(e, aebiten.KEY_UP) == 1 {
             if a.ngon < MAX_N {
                 a.ngon = a.ngon + 1
                 changed = 1
             }
         }
-        if ebiten.is_key_just_pressed(e, ebiten.KEY_DOWN) == 1 {
+        if aebiten.is_key_just_pressed(e, aebiten.KEY_DOWN) == 1 {
             if a.ngon > 1 {
                 a.ngon = a.ngon - 1
                 changed = 1
@@ -107,12 +107,12 @@ main() {
         }
         if changed == 1 { gen_vertices(a) }
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
+    aebiten.on_draw(e) callback |screen: ptr| {
         core.image_fill(screen, 0, 0, 0, 255)
         core.draw_triangles(screen, a.white, a.verts, a.ngon + 1,
             a.idx, a.ngon * 3, null)
-        ebiten.debug_print(e, screen,
-            "Up/Down: change the vertices  N: ${a.ngon}  FPS: ${ebiten.actual_fps(e)}")
+        aebiten.debug_print(e, screen,
+            "Up/Down: change the vertices  N: ${a.ngon}  FPS: ${aebiten.actual_fps(e)}")
     }
-    ebiten.run(e, "Polygons (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+    aebiten.run(e, "Polygons (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

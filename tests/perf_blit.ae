@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import ebiten.core
+import aebiten.core
 import std.os
 extern println(s: string)
 

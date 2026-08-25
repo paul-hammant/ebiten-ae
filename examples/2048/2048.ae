@@ -20,9 +20,9 @@
 //
 //   DISPLAY=:0 ./target/build/examples/2048/bin/2048
 
-import ebiten
-import ebiten.core
-import ebiten.util
+import aebiten
+import aebiten.core
+import aebiten.util
 import std.mem
 import std.string
 
@@ -396,14 +396,14 @@ draw_board(g: *Game, screen: ptr) {
 }
 
 dir_pressed(e: ptr) -> int {
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_LEFT) == 1 { return DIR_LEFT }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_A) == 1 { return DIR_LEFT }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_RIGHT) == 1 { return DIR_RIGHT }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_D) == 1 { return DIR_RIGHT }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_UP) == 1 { return DIR_UP }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_W) == 1 { return DIR_UP }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_DOWN) == 1 { return DIR_DOWN }
-    if ebiten.is_key_just_pressed(e, ebiten.KEY_S) == 1 { return DIR_DOWN }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_LEFT) == 1 { return DIR_LEFT }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_A) == 1 { return DIR_LEFT }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_RIGHT) == 1 { return DIR_RIGHT }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_D) == 1 { return DIR_RIGHT }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_UP) == 1 { return DIR_UP }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_W) == 1 { return DIR_UP }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_DOWN) == 1 { return DIR_DOWN }
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_S) == 1 { return DIR_DOWN }
     return DIR_NONE
 }
 
@@ -420,8 +420,8 @@ main() {
     g.pop_frame = 0
     g.pop_n = 0
 
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback {
+    e = aebiten.game_new(SCREEN_W, SCREEN_H)
+    aebiten.on_update(e) callback {
         if g.anim_frame > 0 {
             g.anim_frame = g.anim_frame - 1
             if g.anim_frame == 0 && g.pop_n > 0 { g.pop_frame = POP_FRAMES }
@@ -432,7 +432,7 @@ main() {
             if can_move(g) == 0 { g.game_over = 1 }
         }
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
+    aebiten.on_draw(e) callback |screen: ptr| {
         core.image_fill(screen, 250, 248, 239, 255)
         util.debug_print_scaled(g.font, screen, "2048",
             SCREEN_W / 2.0, 30.0, 4.0, util.ALIGN_CENTER)
@@ -444,5 +444,5 @@ main() {
                 SCREEN_W / 2.0, 540.0, 2.0, util.ALIGN_CENTER)
         }
     }
-    ebiten.run(e, "2048 (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+    aebiten.run(e, "2048 (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

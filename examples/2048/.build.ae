@@ -2,7 +2,7 @@
 import build
 import aether
 import aether (source, output, no_closure_regen, lib)
-import build_support.ebitenui (ebiten_backend)
+import build_support.aebitenui (aebiten_backend)
 
 main() {
     b = build.start()
@@ -13,7 +13,7 @@ main() {
         lib("${root}/../aether-ui")
         lib("${root}")
         no_closure_regen()
-        ebiten_backend(root)
+        aebiten_backend(root)
     }
     return 0
 }

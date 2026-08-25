@@ -13,19 +13,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/module.ae — the Ebiten→Aether engine (`import ebiten`).
+// ae/aebiten/module.ae — the Ebiten→Aether engine (`import aebiten`).
 //
 // Owns what run.go / gameforui.go / internal/clock / internal/inputstate did:
 // the fixed-TPS game loop, the input state table, and the screen present —
 // over an aether-ui window + canvas instead of GLFW + GPU.
 //
-//   e = ebiten.game_new(320, 240)
-//   ebiten.on_update(e) callback { ... }            // 60 TPS, fixed step
-//   ebiten.on_draw(e) callback |screen: ptr| { ... } // per frame; screen is a
-//                                                    // ebiten.core image handle
-//   ebiten.run(e, "title", 340, 280)                 // blocks
+//   e = aebiten.game_new(320, 240)
+//   aebiten.on_update(e) callback { ... }            // 60 TPS, fixed step
+//   aebiten.on_draw(e) callback |screen: ptr| { ... } // per frame; screen is a
+//                                                    // aebiten.core image handle
+//   aebiten.run(e, "title", 340, 280)                 // blocks
 //
-// Input queries (valid inside update): is_key_pressed(e, ebiten.KEY_LEFT) etc.
+// Input queries (valid inside update): is_key_pressed(e, aebiten.KEY_LEFT) etc.
 // Key press/release arrive from canvas_on_key / canvas_on_key_release; "just
 // pressed/released" are per-tick snapshots, Ebiten's inpututil semantics.
 
@@ -57,8 +57,8 @@ exports (
 
 import ui
 import ui (window, enable_test_server)
-import ebiten.core
-import ebiten.util
+import aebiten.core
+import aebiten.util
 import std.string
 import std.mem
 import std.os
@@ -261,7 +261,7 @@ set_scale(ep: ptr, s: float) {
     if s > 0.0 { e.scale = s }
 }
 
-// The screen image handle (a ebiten.core image) — also passed to on_draw.
+// The screen image handle (a aebiten.core image) — also passed to on_draw.
 screen_of(ep: ptr) -> ptr {
     e = ep as *Engine
     return e.screen
@@ -468,7 +468,7 @@ present(e: *Engine) {
 // ─── the game block: declarative top level ───────────────────────────────────
 // The builder-DSL face of game_new + on_update + on_draw + run:
 //
-//   ebiten.game("Snake", 640, 480) {
+//   aebiten.game("Snake", 640, 480) {
 //       window_scale(2.0)
 //       update callback |e: ptr| { ... }
 //       draw callback |e: ptr, screen: ptr| { ... }

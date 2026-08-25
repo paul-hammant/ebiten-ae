@@ -18,8 +18,8 @@
 //
 //   DISPLAY=:0 ./target/build/examples/life/bin/life
 
-import ebiten
-import ebiten.core
+import aebiten
+import aebiten.core
 import std.mem
 
 extern malloc(size: int) -> ptr
@@ -114,14 +114,14 @@ main() {
     w.seed = 20240824
     world_init(w, W * H / 10)
 
-    e = ebiten.game_new(W, H)
-    ebiten.set_scale(e, 2.0)
-    ebiten.on_update(e) callback {
+    e = aebiten.game_new(W, H)
+    aebiten.set_scale(e, 2.0)
+    aebiten.on_update(e) callback {
         world_update(w)
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
+    aebiten.on_draw(e) callback |screen: ptr| {
         world_draw(w)
         core.image_write_pixels(screen, w.pixels)
     }
-    ebiten.run(e, "Game of Life (Ebitengine Demo)", W * 2 + 20, H * 2 + 40)
+    aebiten.run(e, "Game of Life (Ebitengine Demo)", W * 2 + 20, H * 2 + 40)
 }

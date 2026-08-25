@@ -14,7 +14,7 @@
 
 // test_audio.ae — audio mapping over std.audio (headless: transport +
 // volume + duration on a real Ebiten example asset).
-import ebiten.audio
+import aebiten.audio
 
 extern println(s: string)
 extern exit(code: int)

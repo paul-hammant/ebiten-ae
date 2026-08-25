@@ -1,6 +1,6 @@
-# Ebiten, in Aether
+# Aebiten
 
-A 2D game engine written in
+**Aebiten** — a 2D game engine written in
 [Aether](https://github.com/aether-lang-dev/aether), rendering through
 [aether-ui](https://github.com/aether-lang-dev/aether-ui)'s canvas
 (GTK4 / AppKit / Win32). Games are `.ae` programs: a fixed-60-TPS
@@ -33,7 +33,7 @@ The two branches are not mirror images, and the gaps are deliberate:
   The concepts and names carry over (GeoM, DrawImage, ColorM, DebugPrint,
   just-pressed input, fixed-TPS update), but where Go has interfaces and
   methods, Aether has handles plus the trailing-block builder DSL
-  (`ebiten.game { }`, `core.draw { }`). Code does not port line-for-line
+  (`aebiten.game { }`, `core.draw { }`). Code does not port line-for-line
   between the branches; behaviour does.
 - **Feature coverage.** Some upstream subsystems are deliberately absent
   here — Kage shaders, gamepad/touch/mobile/JS targets, TTF text so far —
@@ -49,14 +49,14 @@ The two branches are not mirror images, and the gaps are deliberate:
 
 ## Layout
 
-- `ebiten/core.ae` — pure drawing core: GeoM, ColorScale, ColorM, blend
+- `aebiten/core.ae` — pure drawing core: GeoM, ColorScale, ColorM, blend
   table, Image + DrawImage/DrawTriangles, and the per-pixel loops.
   Headless, no ui dependency — the whole engine is Aether.
-- `ebiten/png.ae` — PNG decoder (std.zlib inflate).
-- `ebiten/util.ae` — ebitenutil: DebugPrint bitmap font (embedded), scaled text.
-- `ebiten/vector.ae` — vector: primitives + scanline path fill.
-- `ebiten/audio.ae` — audio players over std.audio.
-- `ebiten/module.ae` — the engine (`import ebiten`): game loop, input,
+- `aebiten/png.ae` — PNG decoder (std.zlib inflate).
+- `aebiten/util.ae` — ebitenutil: DebugPrint bitmap font (embedded), scaled text.
+- `aebiten/vector.ae` — vector: primitives + scanline path fill.
+- `aebiten/audio.ae` — audio players over std.audio.
+- `aebiten/module.ae` — the engine (`import aebiten`): game loop, input,
   window/canvas present.
 - `examples/<name>/` — ported examples, one aeb node each
   (`examples/resources/` keeps the original assets).
@@ -88,14 +88,14 @@ the `game` block registers the loop, the `draw` block builds a DrawImage's
 options — no handles threaded, no option objects created or freed by hand.
 
 ```aether
-import ebiten
-import ebiten.core
+import aebiten
+import aebiten.core
 
 main() {
-    ebiten.game("Title", 320, 240) {           // logical size; runs on block end
+    aebiten.game("Title", 320, 240) {           // logical size; runs on block end
         window_scale(2.0)                       // optional window upscale
         update() callback |e: ptr| {            // 60 TPS fixed step
-            if ebiten.is_key_just_pressed(e, ebiten.KEY_SPACE) == 1 { ... }
+            if aebiten.is_key_just_pressed(e, aebiten.KEY_SPACE) == 1 { ... }
         }
         draw() callback |e: ptr, screen: ptr| { // per frame
             core.image_fill(screen, 0, 0, 0, 255)
@@ -106,7 +106,7 @@ main() {
                 linear()
                 opacity(0.5)
             }
-            ebiten.debug_print(e, screen, "FPS: ${ebiten.actual_fps(e)}")
+            aebiten.debug_print(e, screen, "FPS: ${aebiten.actual_fps(e)}")
         }
     }
 }
@@ -115,7 +115,7 @@ main() {
 The explicit-handle API (`game_new` / `on_update` / `on_draw` / `run`,
 `opts_new` + `geom_*`) remains — six of the nine examples still use it;
 snake, flappy, and rotate show the DSL form. One naming rule: inside
-`ebiten.*` / `core.*` trailing blocks, bare names resolve to the module's
+`aebiten.*` / `core.*` trailing blocks, bare names resolve to the module's
 DSL setters before your file's functions — name your own tick/paint
 functions something other than `update`/`draw` (the ports use
 `step`/`render`).

@@ -18,8 +18,8 @@
 //
 //   DISPLAY=:0 ./target/build/examples/doomfire/bin/doomfire
 
-import ebiten
-import ebiten.core
+import aebiten
+import aebiten.core
 import std.mem
 
 extern malloc(size: int) -> ptr
@@ -138,14 +138,14 @@ main() {
         i = i + 1
     }
 
-    e = ebiten.game_new(W, H)
-    ebiten.set_scale(e, 6.0)
-    ebiten.on_update(e) callback {
+    e = aebiten.game_new(W, H)
+    aebiten.set_scale(e, 6.0)
+    aebiten.on_update(e) callback {
         update_fire(f)
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
+    aebiten.on_draw(e) callback |screen: ptr| {
         render_fire(f)
         core.image_write_pixels(screen, f.pixels)
     }
-    ebiten.run(e, "Doom Fire (Ebitengine Demo)", W * 6 + 20, H * 6 + 40)
+    aebiten.run(e, "Doom Fire (Ebitengine Demo)", W * 6 + 20, H * 6 + 40)
 }

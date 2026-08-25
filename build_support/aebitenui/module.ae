@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ebitenui — consumer-local aeb library module for building the Aether port
+// aebitenui — consumer-local aeb library module for building the Aether port
 // of Ebiten against a sibling aether-ui checkout.
 //
 // Mirrors aether-ui's build_support/aetherui ui_backend builder (the ~50-line
@@ -24,7 +24,7 @@
 //       source("../../<app>.ae")
 //       output("<app>")
 //       no_closure_regen()
-//       ebiten_backend(root)        // root = this (ebiten) repo's root
+//       aebiten_backend(root)        // root = this (aebiten) repo's root
 //   }
 
 import std.string
@@ -50,7 +50,7 @@ aui_root(root: string) -> string {
     return "${root}/../aether-ui"
 }
 
-builder ebiten_backend(root: string) {
+builder aebiten_backend(root: string) {
     sdk = sdk_prefix()
     aui = aui_root(root)
     include_dir("${sdk}/include/aether/runtime")

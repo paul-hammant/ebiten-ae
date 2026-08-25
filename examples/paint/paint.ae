@@ -18,8 +18,8 @@
 //
 //   DISPLAY=:0 ./target/build/examples/paint/bin/paint
 
-import ebiten
-import ebiten.core
+import aebiten
+import aebiten.core
 import std.mem
 
 extern malloc(size: int) -> ptr
@@ -80,18 +80,18 @@ main() {
     a.brush = make_brush()
     a.count = 0
 
-    e = ebiten.game_new(SCREEN_W, SCREEN_H)
-    ebiten.on_update(e) callback {
-        if ebiten.is_mouse_button_pressed(e, ebiten.MOUSE_BUTTON_LEFT) == 1 {
-            paint(a, ebiten.cursor_x(e), ebiten.cursor_y(e))
+    e = aebiten.game_new(SCREEN_W, SCREEN_H)
+    aebiten.on_update(e) callback {
+        if aebiten.is_mouse_button_pressed(e, aebiten.MOUSE_BUTTON_LEFT) == 1 {
+            paint(a, aebiten.cursor_x(e), aebiten.cursor_y(e))
         }
         a.count = a.count + 1
     }
-    ebiten.on_draw(e) callback |screen: ptr| {
+    aebiten.on_draw(e) callback |screen: ptr| {
         core.draw_image(screen, a.canvas, null)
-        cx = lrint(ebiten.cursor_x(e))
-        cy = lrint(ebiten.cursor_y(e))
-        ebiten.debug_print(e, screen, "(${cx}, ${cy})")
+        cx = lrint(aebiten.cursor_x(e))
+        cy = lrint(aebiten.cursor_y(e))
+        aebiten.debug_print(e, screen, "(${cx}, ${cy})")
     }
-    ebiten.run(e, "Paint (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
+    aebiten.run(e, "Paint (Ebitengine Demo)", SCREEN_W + 20, SCREEN_H + 40)
 }

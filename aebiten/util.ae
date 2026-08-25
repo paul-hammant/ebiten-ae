@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/util.ae — ebitenutil equivalents: the DebugPrint bitmap-font
+// ae/aebiten/util.ae — ebitenutil equivalents: the DebugPrint bitmap-font
 // HUD. The 6x16-cell 256-glyph font sheet is the original ebitenutil/text.png
 // (tests/testdata/text.png here; ebitenutil/ lives on legacy_golang), embedded
 // below as hex (decoded once via ebiten.png on first use).
@@ -23,8 +23,8 @@ exports (
     ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
 )
 
-import ebiten.core
-import ebiten.png
+import aebiten.core
+import aebiten.png
 import std.mem
 import std.bytes
 import std.string

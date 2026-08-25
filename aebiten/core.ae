@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ae/ebiten/core.ae — pure core of the Ebiten→Aether port.
+// ae/aebiten/core.ae — pure core of the Ebiten→Aether port.
 //
 // No aether-ui dependency: GeoM (geom.go), ColorScale (colorscale.go), the
 // blend factor/operation table (blend.go), and Image + the software DrawImage
