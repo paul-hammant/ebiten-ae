@@ -10,7 +10,7 @@ cd "$(cd "$(dirname "$0")" && pwd)"
 FAIL=0
 
 echo "=== Phase 0: headless unit tests ==="
-for t in test_core test_png test_util test_vector test_audio; do
+for t in test_core test_png test_util test_vector test_audio test_text; do
     if ae run "tests/${t}.ae" > "/tmp/ci_ae_${t}.log" 2>&1; then
         echo "  PASS ${t}: $(tail -1 /tmp/ci_ae_${t}.log)"
     else

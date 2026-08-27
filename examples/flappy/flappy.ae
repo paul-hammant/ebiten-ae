@@ -20,8 +20,6 @@
 // rotated gopher, jump/hit sounds, score = pipes passed.
 //
 // Substitutions vs the Go original (see AE-MIGRATION.md):
-// - text/v2 + PressStart2P TTF → the debug bitmap font, scaled (no TTF
-//   rasterizer yet)
 // - jump.ogg → decoded by std.audio's sniffing loader if the backend can;
 //   falls back to jab8.wav so the jump always sounds
 // - CRT shader (Kage), touch, gamepad paths: not ported
@@ -33,6 +31,7 @@ import aebiten
 import aebiten.core
 import aebiten.png
 import aebiten.util
+import aebiten.text
 import aebiten.audio
 import std.mem
 import std.math
@@ -71,6 +70,9 @@ struct Game {
     gopher: ptr
     tiles: ptr
     font: ptr
+    title_face: ptr
+    body_face: ptr
+    small_face: ptr
 }
 
 floor_div(x: int, y: int) -> int {
@@ -264,23 +266,24 @@ render(e: ptr, screen: ptr, g: *Game) {
     draw_tiles(g, screen)
     if g.mode != MODE_TITLE { draw_gopher(g, screen) }
 
-    // title / status text (bitmap font, scaled — see header)
+    // title / status text — the Go original's PressStart2P face, drawn by
+    // aebiten.text (vg.font outlines through the scanline rasterizer)
     if g.mode == MODE_TITLE {
-        util.debug_print_scaled(g.font, screen, "FLAPPY GOPHER",
-            SCREEN_W / 2.0, 60.0, 3.0, util.ALIGN_CENTER)
-        util.debug_print_scaled(g.font, screen,
+        text.draw_aligned(g.title_face, screen, "FLAPPY GOPHER",
+            SCREEN_W / 2.0, 110.0, 255, 255, 255, 255, text.ALIGN_CENTER)
+        text.draw_aligned(g.body_face, screen,
             "PRESS SPACE KEY\n\nOR CLICK",
-            SCREEN_W / 2.0, 240.0, 2.0, util.ALIGN_CENTER)
-        util.debug_print_scaled(g.font, screen,
+            SCREEN_W / 2.0, 270.0, 255, 255, 255, 255, text.ALIGN_CENTER)
+        text.draw_aligned(g.small_face, screen,
             "Go Gopher by Renee French is\nlicenced under CC BY 3.0.",
-            SCREEN_W / 2.0, SCREEN_H - 40.0, 1.0, util.ALIGN_CENTER)
+            SCREEN_W / 2.0, SCREEN_H - 26.0, 255, 255, 255, 255, text.ALIGN_CENTER)
     }
     if g.mode == MODE_GAMEOVER {
-        util.debug_print_scaled(g.font, screen, "GAME OVER!",
-            SCREEN_W / 2.0, 200.0, 3.0, util.ALIGN_CENTER)
+        text.draw_aligned(g.title_face, screen, "GAME OVER!",
+            SCREEN_W / 2.0, 230.0, 255, 255, 255, 255, text.ALIGN_CENTER)
     }
-    util.debug_print_scaled(g.font, screen, pad4(score(g)),
-        SCREEN_W * 1.0, 4.0, 2.0, util.ALIGN_RIGHT)
+    text.draw_aligned(g.body_face, screen, pad4(score(g)),
+        SCREEN_W - 4.0, 26.0, 255, 255, 255, 255, text.ALIGN_RIGHT)
     aebiten.debug_print(e, screen, "FPS: ${aebiten.actual_fps(e)}")
 }
 
@@ -295,6 +298,9 @@ main() {
         exit(1)
     }
     g.font = util.debug_font_new()
+    g.title_face = text.face_new("examples/resources/fonts/pressstart2p.ttf", 36.0)
+    g.body_face = text.face_new("examples/resources/fonts/pressstart2p.ttf", 24.0)
+    g.small_face = text.face_new("examples/resources/fonts/pressstart2p.ttf", 12.0)
     _ = audio.context_new(48000)
     g.jump_snd = audio.player_from_wav("examples/resources/audio/jump.ogg")
     if g.jump_snd == null {

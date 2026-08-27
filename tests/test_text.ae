@@ -1,0 +1,66 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// test_text.ae — TrueType text into images (vg.font + the scanline
+// rasterizer), against the Ebiten example fonts kept on main.
+//   ae run tests/test_text.ae   (needs lib/vg -> ../aether-ui/vg)
+
+import aebiten.core
+import aebiten.text
+
+extern println(s: string)
+extern exit(code: int)
+extern lrint(x: float) -> long
+
+main() {
+    face = text.face_new("examples/resources/fonts/pressstart2p.ttf", 24.0)
+    if text.face_ok(face) != 1 {
+        println("FAIL: pressstart2p.ttf did not load")
+        exit(1)
+    }
+
+    w = text.width(face, "FLAPPY")
+    if w < 60.0 || w > 400.0 {
+        println("FAIL: width ${w} out of range")
+        exit(1)
+    }
+
+    img = core.image_new(200, 40)
+    core.image_fill(img, 0, 0, 0, 255)
+    text.draw(face, img, "FLAPPY", 2.0, 30.0, 255, 255, 255, 255)
+
+    lit = 0
+    y = 0
+    while y < 40 {
+        x = 0
+        while x < 200 {
+            if core.image_at_r(img, x, y) > 128 { lit = lit + 1 }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    if lit < 100 {
+        println("FAIL: only ${lit} lit pixels")
+        exit(1)
+    }
+
+    // second face from the other kept font
+    face2 = text.face_new("examples/resources/fonts/mplus-1p-regular.ttf", 16.0)
+    if text.face_ok(face2) != 1 {
+        println("FAIL: mplus did not load")
+        exit(1)
+    }
+
+    println("test_text OK (width=${lrint(w)}px, lit=${lit})")
+}

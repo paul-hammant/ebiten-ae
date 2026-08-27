@@ -1,0 +1,200 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// aebiten/text.ae — the text package: real TrueType text drawn into images.
+//
+// Fully software, fully portable: aether-ui's pure-Aether TTF parser
+// (vg.font — glyf outlines, cmap format 4, kern pairs, UTF-8 runs) feeds
+// this engine's scanline path rasterizer (aebiten.vector). No FreeType, no
+// platform text API — the same bytes render identically everywhere, and the
+// glyphs land IN the destination image (Ebiten's text-into-Image semantics),
+// so text can sit under sprites, be read back, or be measured.
+//
+// A face is a font at a pixel size:
+//   face = text.face_new("examples/resources/fonts/pressstart2p.ttf", 24.0)
+//   text.draw(face, screen, "FLAPPY GOPHER", x, y, 255, 255, 255, 255)
+// (x, y) is the BASELINE origin of the first line; \n advances by
+// line_height (1.25em by default, settable). ALIGN_* mirror util's.
+
+exports (
+    face_new, face_free, face_ok, face_size, face_set_curve_steps,
+    face_set_line_height,
+    width, draw, draw_aligned,
+    ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT
+)
+
+import aebiten.core
+import aebiten.vector
+import vg.font
+import std.string
+import std.math
+
+extern malloc(size: int) -> ptr
+extern free(p: ptr)
+extern string_char_at(s: string, index: int) -> int
+
+const ALIGN_LEFT: int = 0
+const ALIGN_CENTER: int = 1
+const ALIGN_RIGHT: int = 2
+
+struct Face {
+    f: ptr           // vg.font handle
+    size: float      // pixel size (em height)
+    scale: float     // size / unitsPerEm
+    steps: int       // curve flattening segments per quadratic
+    line_h: float    // line height in px
+}
+
+face_new(path: string, size: float) -> ptr {
+    fc = malloc(48) as *Face
+    fc.f = font.font_load(path)
+    fc.size = size
+    fc.scale = 0.0
+    if font.font_ok(fc.f) == 1 {
+        upem = font.font_upem(fc.f)
+        if upem > 0 { fc.scale = size / (upem * 1.0) }
+    }
+    fc.steps = 6
+    fc.line_h = size * 1.25
+    return fc as ptr
+}
+
+face_ok(p: ptr) -> int {
+    fc = p as *Face
+    if fc.scale > 0.0 { return 1 }
+    return 0
+}
+
+face_size(p: ptr) -> float {
+    fc = p as *Face
+    return fc.size
+}
+
+// Curve flattening quality (segments per quadratic; default 6).
+face_set_curve_steps(p: ptr, steps: int) {
+    fc = p as *Face
+    if steps > 0 { fc.steps = steps }
+}
+
+face_set_line_height(p: ptr, h: float) {
+    fc = p as *Face
+    fc.line_h = h
+}
+
+face_free(p: ptr) {
+    free(p)
+}
+
+// Advance width of one line (px). Multi-line callers measure per line.
+line_width(fc: *Face, s: string) -> float {
+    return font.font_text_width(fc.f, s) * fc.scale
+}
+
+// Widest line of a possibly multi-line string (px).
+width(p: ptr, s: string) -> float {
+    fc = p as *Face
+    if face_ok(p) == 0 { return 0.0 }
+    n = string.length(s)
+    best = 0.0
+    start = 0
+    i = 0
+    while i <= n {
+        at_end = 0
+        if i == n { at_end = 1 }
+        c = 0
+        if at_end == 0 { c = string_char_at(s, i) }
+        if at_end == 1 || c == 10 {
+            w = line_width(fc, string.substring(s, start, i))
+            if w > best { best = w }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return best
+}
+
+// Rasterize one line's outlines into dst at baseline (ox, oy).
+draw_line(fc: *Face, dst: ptr, s: string, ox: float, oy: float,
+          r: int, g: int, b: int, a: int) {
+    o = font.font_text_outlines(fc.f, s, fc.steps)
+    if font.outl_ok(o) == 0 {
+        font.outl_free(o)
+        return
+    }
+    nc = font.outl_nctrs(o)
+    if nc == 0 {
+        font.outl_free(o)
+        return
+    }
+    p = vector.path_new()
+    start = 0
+    c = 0
+    while c < nc {
+        last = font.outl_ctr_end(o, c)
+        i = start
+        while i <= last {
+            // font units, y-up → px, y-down, baseline-anchored
+            x = ox + font.outl_px(o, i) * fc.scale
+            y = oy - font.outl_py(o, i) * fc.scale
+            if i == start {
+                vector.path_move_to(p, x, y)
+            } else {
+                vector.path_line_to(p, x, y)
+            }
+            i = i + 1
+        }
+        vector.path_close(p)
+        start = last + 1
+        c = c + 1
+    }
+    // TrueType winding is nonzero (outer contours CW, holes CCW)
+    vector.fill_path(dst, p, r, g, b, a, vector.FILL_RULE_NON_ZERO)
+    vector.path_free(p)
+    font.outl_free(o)
+}
+
+// Draw str into dst; (x, y) is the first line's baseline origin. \n wraps.
+draw(p: ptr, dst: ptr, s: string, x: float, y: float,
+     r: int, g: int, b: int, a: int) {
+    draw_aligned(p, dst, s, x, y, r, g, b, a, ALIGN_LEFT)
+}
+
+// As draw, but each line positioned about x per align.
+draw_aligned(p: ptr, dst: ptr, s: string, x: float, y: float,
+             r: int, g: int, b: int, a: int, align: int) {
+    fc = p as *Face
+    if face_ok(p) == 0 { return }
+    n = string.length(s)
+    start = 0
+    liney = y
+    i = 0
+    while i <= n {
+        at_end = 0
+        if i == n { at_end = 1 }
+        c = 0
+        if at_end == 0 { c = string_char_at(s, i) }
+        if at_end == 1 || c == 10 {
+            line = string.substring(s, start, i)
+            lx = x
+            if align == ALIGN_CENTER { lx = x - line_width(fc, line) / 2.0 }
+            if align == ALIGN_RIGHT { lx = x - line_width(fc, line) }
+            if string.length(line) > 0 {
+                draw_line(fc, dst, line, lx, liney, r, g, b, a)
+            }
+            start = i + 1
+            liney = liney + fc.line_h
+        }
+        i = i + 1
+    }
+}

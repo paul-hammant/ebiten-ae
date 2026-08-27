@@ -37,7 +37,8 @@ The two branches are not mirror images, and the gaps are deliberate:
   between the branches; behaviour does.
 - **Feature coverage.** Some upstream subsystems are deliberately absent
   here — Kage shaders, gamepad/touch/mobile/JS targets, TTF text so far —
-  and some things exist only here (the software compositor itself). The
+  and some things exist only here (the software compositor itself); TTF
+  text renders through aether-ui's `vg.font` rather than go-text. The
   authoritative list is the status table in
   [`AE-MIGRATION.md`](AE-MIGRATION.md).
 - **Time.** `legacy_golang` follows upstream, which keeps moving; `main`
@@ -56,6 +57,9 @@ The two branches are not mirror images, and the gaps are deliberate:
 - `aebiten/util.ae` — ebitenutil: DebugPrint bitmap font (embedded), scaled text.
 - `aebiten/vector.ae` — vector: primitives + scanline path fill.
 - `aebiten/audio.ae` — audio players over std.audio.
+- `aebiten/text.ae` — TrueType text into images (aether-ui's pure-Aether
+  `vg.font` parser + the scanline rasterizer; `lib/vg` symlinks the sibling
+  checkout so headless `ae run` resolves it).
 - `aebiten/module.ae` — the engine (`import aebiten`): game loop, input,
   window/canvas present.
 - `examples/<name>/` — ported examples, one aeb node each

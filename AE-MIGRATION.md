@@ -68,7 +68,7 @@ Build: `aeb examples/<name>` from the repo root →
 | vector | `vector/` | `aebiten/vector.ae` | ✅ + tests (fill/stroke rect+circle+line, Path with quad/cubic/arc, nonzero+even-odd scanline fill; no AA yet) |
 | PNG decode (assets) | `internal/png` | `aebiten/png.ae` | ✅ + tests (8-bit gray/RGB/palette/GA/RGBA, all filters; no interlace/16-bit) |
 | audio | `audio/` | `aebiten/audio.ae` | ✅ + tests over `std.audio` (WAV + whatever miniaudio sniffs; real device backend) |
-| text (TTF, text/v2) | `text/` | todo | via aether-ui `vg` font machinery; DebugPrint-scaled is the interim |
+| text (TTF, text/v2) | `text/` | `aebiten/text.ae` | ✅ + tests — vg.font (aether-ui's pure-Aether TTF parser: glyf, cmap 4, kern) outlines through the scanline rasterizer, into images; flappy titles now render the original PressStart2P |
 | DrawTriangles | `image.go` | `aebiten/core.ae` | ✅ + tests (barycentric, per-vertex color+UV, straight-alpha mode; pure Aether — hot-path C port when an example needs it) |
 | Shaders (Kage) | `shader.go`, `internal/shader*` | **deferred** | no software-shader story yet |
 | gamepad, vibrate, mobile, js, ps5 | `internal/gamepad` etc | **not ported** | out of scope for canvas backend |
