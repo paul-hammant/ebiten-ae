@@ -1,28 +1,19 @@
-// Copyright 2026 The Ebiten Aether Port Authors
+// all.ae — build every ported example as a FAN-OUT of cached per-app aeb
+// nodes (the aether-ui .all.ae pattern; aeb Shape A, b-free).
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//   aeb all.ae                build all ported examples
+//   aeb examples/snake        build one
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// EXTRACTOR-COMPAT BRIDGE (copied from aether-ui's .all.ae) — remove when
+// aeb's tools/extract-deps learns the Shape-A spelling; its static pass
+// still greps for the OLD needle:
+//   scan(b, "examples/**/.build.ae")
 
-// all.ae — build every Aether-port binary as a fan-out of cached per-app
-// aeb nodes (the aether-ui .all.ae pattern; dot-prefixed roots break aeb's
-// orchestrator symbol, hence the name).
-//
-//   aeb all.ae             build all ported examples
-//   aeb examples/snake     build one
-
-import build
+import bldr
 
 main() {
-    b = build.start()
-    build.scan(b, "examples/**/.build.ae")
-    return 0
+    bldr.build() {
+        scan("examples/**/.build.ae")
+        return 0
+    }
 }

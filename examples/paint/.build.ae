@@ -1,19 +1,20 @@
 // paint — Ebiten example port, as its own cached aeb node.
-import build
+import bldr
 import aether
 import aether (source, output, no_closure_regen, lib)
 import build_support.aebitenui (aebiten_backend)
 
 main() {
-    b = build.start()
-    root = build._get(b, "root")
-    aether.program(b) {
-        source("paint.ae")
-        output("paint")
-        lib("${root}/../aether-ui")
-        lib("${root}")
-        no_closure_regen()
-        aebiten_backend(root)
+    bldr.build() {
+        root = _get("root")
+        aether.program() {
+            source("paint.ae")
+            output("paint")
+            lib("${root}/../aether-ui")
+            lib("${root}")
+            no_closure_regen()
+            aebiten_backend(root)
+        }
+        return 0
     }
-    return 0
 }
