@@ -1,0 +1,694 @@
+// Copyright 2026 The Ebiten Aether Port Authors
+// Portions Copyright 2013 Hajime Hoshi and The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// blocks.ae — port of examples/blocks (the upstream flagship game example):
+// a full Tetris. Title scene, 20-frame cross-fade scene transitions, DAS
+// auto-repeat input, soft-drop scoring, line-flush animation with the
+// original's red-fade ColorM, level speed curve, sprite-sheet blocks, and
+// PressStart2P shadowed text — all as the Go original (legacy_golang:
+// examples/blocks/blocks/*.go).
+//
+// Substitutions vs the Go original:
+// - the game scene's background is background.png tiled (the original
+//   cover-scales gophers.jpg — JPEG, no decoder here) under the same
+//   lightGray desaturating ColorM
+// - gamepad play + the gamepad-configuration scene are not ported
+//   (keyboard: arrows move/drop, Space/X rotate right, Z rotate left)
+//
+//   DISPLAY=:0 ./target/build/examples/blocks/bin/blocks
+
+import aebiten
+import aebiten.core
+import aebiten.png
+import aebiten.text
+import aebiten.vector
+import std.mem
+import std.string
+
+extern malloc(size: int) -> ptr
+extern calloc(n: int, size: int) -> ptr
+extern println(s: string)
+extern exit(code: int)
+
+const SW: int = 256
+const SH: int = 240
+const BLOCK: int = 10
+const FIELD_NX: int = 10
+const FIELD_NY: int = 20
+const FIELD_W: int = 100
+const FIELD_H: int = 200
+const MAX_FLUSH: int = 30
+const TRANSITION_MAX: int = 20
+
+const SCENE_TITLE: int = 0
+const SCENE_GAME: int = 1
+
+// ─── assets & app state ──────────────────────────────────────────────────────
+
+struct App {
+    blocks_img: ptr      // 70x10 sheet, 7 block sprites
+    bg_img: ptr          // background.png tile
+    face1: ptr           // PressStart2P 8px
+    face4: ptr           // PressStart2P 32px (the logo)
+    windows_img: ptr     // prebuilt HUD chrome
+    gameover_img: ptr    // prebuilt overlay
+    light_gray: ptr      // the desaturating ColorM
+    seed: int
+
+    // scene manager
+    cur_scene: int
+    next_scene: int
+    transition: int
+    trans_from: ptr
+    trans_to: ptr
+
+    // title scene
+    title_count: int
+
+    // game scene
+    field: ptr           // FIELD_NX*FIELD_NY bytes
+    flush_count: int
+    cur_piece: int       // 0 = none, 1..7
+    px: int
+    py: int
+    py_carry: int
+    angle: int
+    next_piece: int
+    landing: int
+    score: int
+    lines: int
+    gameover: int
+}
+
+rand_n(a: *App, n: int) -> int {
+    a.seed = a.seed * 1103515245 + 12345
+    v = (a.seed / 65536) % 32768
+    if v < 0 { v = 0 - v }
+    return v % n
+}
+
+// ─── pieces ──────────────────────────────────────────────────────────────────
+// Piece p (1..7): size + row strings, indexed base(i, j) = row_j[i] (the Go
+// source transposes its row literals; row_j[i] is the transposed lookup).
+
+piece_size(p: int) -> int {
+    if p == 1 { return 4 }
+    if p == 7 { return 2 }
+    return 3
+}
+
+piece_row(p: int, j: int) -> string {
+    if p == 1 {
+        if j == 1 { return "1111" }
+        return "0000"
+    }
+    if p == 2 {
+        if j == 0 { return "100" }
+        if j == 1 { return "111" }
+        return "000"
+    }
+    if p == 3 {
+        if j == 0 { return "010" }
+        if j == 1 { return "111" }
+        return "000"
+    }
+    if p == 4 {
+        if j == 0 { return "001" }
+        if j == 1 { return "111" }
+        return "000"
+    }
+    if p == 5 {
+        if j == 0 { return "110" }
+        if j == 1 { return "011" }
+        return "000"
+    }
+    if p == 6 {
+        if j == 0 { return "011" }
+        if j == 1 { return "110" }
+        return "000"
+    }
+    // p == 7
+    return "11"
+}
+
+extern string_char_at(s: string, index: int) -> int
+
+piece_base(p: int, i: int, j: int) -> int {
+    if string_char_at(piece_row(p, j), i) == 49 { return 1 }
+    return 0
+}
+
+// Rotation mapping (piece.go isBlocked): angle 0..3 = 0/90/180/270.
+piece_blocked(p: int, i: int, j: int, angle: int) -> int {
+    size = piece_size(p)
+    i2 = i
+    j2 = j
+    if angle == 1 {
+        i2 = j
+        j2 = size - 1 - i
+    }
+    if angle == 2 {
+        i2 = size - 1 - i
+        j2 = size - 1 - j
+    }
+    if angle == 3 {
+        i2 = size - 1 - j
+        j2 = i
+    }
+    return piece_base(p, i2, j2)
+}
+
+piece_initial_x(p: int) -> int { return (FIELD_NX - piece_size(p)) / 2 }
+
+piece_initial_y(p: int) -> int {
+    size = piece_size(p)
+    y = 0
+    j = 0
+    while j < size {
+        i = 0
+        while i < size {
+            if piece_base(p, i, j) == 1 { return y }
+            i = i + 1
+        }
+        y = y - 1
+        j = j + 1
+    }
+    return y
+}
+
+// ─── field ───────────────────────────────────────────────────────────────────
+
+field_at(a: *App, x: int, y: int) -> int {
+    return mem.get_byte(a.field, y * FIELD_NX + x)
+}
+
+field_is_blocked(a: *App, x: int, y: int) -> int {
+    if x < 0 || x >= FIELD_NX { return 1 }
+    if y < 0 { return 0 }
+    if y >= FIELD_NY { return 1 }
+    if field_at(a, x, y) != 0 { return 1 }
+    return 0
+}
+
+piece_collides(a: *App, p: int, x: int, y: int, angle: int) -> int {
+    size = piece_size(p)
+    i = 0
+    while i < size {
+        j = 0
+        while j < size {
+            if piece_blocked(p, i, j, angle) == 1 && field_is_blocked(a, x + i, y + j) == 1 {
+                return 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+field_flushable_line(a: *App, j: int) -> int {
+    i = 0
+    while i < FIELD_NX {
+        if field_at(a, i, j) == 0 { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+field_flushable(a: *App) -> int {
+    j = FIELD_NY - 1
+    while j >= 0 {
+        if field_flushable_line(a, j) == 1 { return 1 }
+        j = j - 1
+    }
+    return 0
+}
+
+field_absorb(a: *App, p: int, x: int, y: int, angle: int) {
+    size = piece_size(p)
+    i = 0
+    while i < size {
+        j = 0
+        while j < size {
+            if piece_blocked(p, i, j, angle) == 1 {
+                mem.set_byte(a.field, (y + j) * FIELD_NX + (x + i), p)
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if field_flushable(a) == 1 { a.flush_count = MAX_FLUSH }
+}
+
+// Remove full lines, shifting everything down; returns lines removed.
+field_end_flush(a: *App) -> int {
+    flushed = 0
+    j = FIELD_NY - 1
+    while j >= 0 {
+        jj = j + flushed
+        if field_flushable_line(a, jj) == 1 {
+            j2 = jj
+            while j2 >= 1 {
+                i = 0
+                while i < FIELD_NX {
+                    mem.set_byte(a.field, j2 * FIELD_NX + i, field_at(a, i, j2 - 1))
+                    i = i + 1
+                }
+                j2 = j2 - 1
+            }
+            i = 0
+            while i < FIELD_NX {
+                mem.set_byte(a.field, i, 0)
+                i = i + 1
+            }
+            flushed = flushed + 1
+        }
+        j = j - 1
+    }
+    return flushed
+}
+
+// ─── drawing helpers ─────────────────────────────────────────────────────────
+
+// One block sprite from the 70x10 sheet; cm = optional ColorM (null = none).
+draw_block(a: *App, dst: ptr, block: int, x: int, y: int, cm: ptr) {
+    if block == 0 { return }
+    sx = (block - 1) * BLOCK
+    sprite = core.image_sub(a.blocks_img, sx, 0, sx + BLOCK, BLOCK)
+    o = core.opts_new()
+    core.geom_translate(core.opts_geom(o), x * 1.0, y * 1.0)
+    if cm != null { core.opts_set_colorm(o, cm) }
+    core.draw_image(dst, sprite, o)
+    core.opts_free(o)
+    core.image_free(sprite)
+}
+
+// The flush animation's ColorM (field.go flushingColor): fading alpha,
+// rising red translate.
+flushing_colorm(rate: float) -> ptr {
+    cm = core.colorm_new()
+    alpha = rate * 2.0
+    if alpha > 1.0 { alpha = 1.0 }
+    core.colorm_scale(cm, 1.0, 1.0, 1.0, alpha)
+    r = (1.0 - rate) * 2.0
+    if r > 1.0 { r = 1.0 }
+    core.colorm_translate(cm, r, 0.0, 0.0, 0.0)
+    return cm
+}
+
+// PressStart2P with a +1,+1 half-black shadow (font.go drawTextWithShadow).
+// y is the TOP of the text (text/v2 secondary Start); baseline = y + size.
+shadow_text(a: *App, dst: ptr, s: string, x: float, y: float, scale: int,
+            r: int, g: int, b: int, align: int) {
+    face = a.face1
+    if scale == 4 { face = a.face4 }
+    size = 8.0 * scale
+    text.draw_aligned(face, dst, s, x + 1.0, y + size + 1.0, 0, 0, 0, 128, align)
+    text.draw_aligned(face, dst, s, x, y + size, r, g, b, 255, align)
+}
+
+// HUD window: translucent black rect (gamescene.go drawWindow).
+draw_window(dst: ptr, x: int, y: int, w: int, h: int) {
+    core.image_fill_rect(dst, x, y, w, h, 0, 0, 0, 192)
+}
+
+// Positions (gamescene.go's little position helpers).
+next_label_x() -> int { return 20 + FIELD_W + 2 * BLOCK }
+text_box_w() -> int { return SW - 2 * BLOCK - next_label_x() }
+score_box_y() -> int { return 20 + BLOCK + 6 * BLOCK }
+level_box_y() -> int { return score_box_y() + 4 * BLOCK }
+lines_box_y() -> int { return level_box_y() + 4 * BLOCK }
+
+draw_text_box(a: *App, dst: ptr, label: string, x: int, y: int, w: int) {
+    shadow_text(a, dst, label, x * 1.0, y * 1.0, 1, 64, 64, 255, text.ALIGN_LEFT)
+    draw_window(dst, x, y + BLOCK, w, 2 * BLOCK)
+}
+
+draw_text_box_content(a: *App, dst: ptr, content: string, x: int, y: int, w: int) {
+    // right-aligned, vertically centred in the 2-block box
+    shadow_text(a, dst, content, (x + w - 5) * 1.0, (y + BLOCK + 6) * 1.0, 1,
+        255, 255, 255, text.ALIGN_RIGHT)
+}
+
+// The prebuilt HUD chrome (gamescene.go's init): field window, NEXT window,
+// SCORE/LEVEL/LINES boxes.
+build_windows(a: *App) {
+    img = core.image_new(SW, SH)
+    draw_window(img, 20, 20, FIELD_W, FIELD_H)
+    shadow_text(a, img, "NEXT", next_label_x() * 1.0, 20.0, 1, 64, 64, 255, text.ALIGN_LEFT)
+    draw_window(img, next_label_x(), 20 + BLOCK, 5 * BLOCK, 5 * BLOCK)
+    draw_text_box(a, img, "SCORE", next_label_x(), score_box_y(), text_box_w())
+    draw_text_box(a, img, "LEVEL", next_label_x(), level_box_y(), text_box_w())
+    draw_text_box(a, img, "LINES", next_label_x(), lines_box_y(), text_box_w())
+    a.windows_img = img
+}
+
+build_gameover(a: *App) {
+    img = core.image_new(SW, SH)
+    core.image_fill(img, 0, 0, 0, 128)
+    y = (SH - BLOCK) / 2
+    shadow_text(a, img, "GAME OVER\n\nPRESS SPACE", SW / 2.0, y * 1.0, 1,
+        255, 255, 255, text.ALIGN_CENTER)
+    a.gameover_img = img
+}
+
+// gamescene.go's lightGray: 0.7×grayscale + 0.3×identity, +0.3 translate.
+build_light_gray(a: *App) {
+    mono = core.colorm_new()
+    core.colorm_change_hsv(mono, 0.0, 0.0, 1.0)
+    cm = core.colorm_new()
+    j = 0
+    while j < 4 {
+        i = 0
+        while i < 4 {
+            idv = 0.0
+            if i == j { idv = 1.0 }
+            core.colorm_set_element(cm, i, j,
+                core.colorm_element(mono, i, j) * 0.7 + idv * 0.3)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    core.colorm_translate(cm, 0.3, 0.3, 0.3, 0.0)
+    core.colorm_free(mono)
+    a.light_gray = cm
+}
+
+// ─── scenes ──────────────────────────────────────────────────────────────────
+
+game_reset(a: *App) {
+    i = 0
+    while i < FIELD_NX * FIELD_NY {
+        mem.set_byte(a.field, i, 0)
+        i = i + 1
+    }
+    a.flush_count = 0
+    a.cur_piece = 0
+    a.next_piece = 0
+    a.py_carry = 0
+    a.landing = 0
+    a.score = 0
+    a.lines = 0
+    a.gameover = 0
+}
+
+go_to(a: *App, scene: int) {
+    a.next_scene = scene
+    a.transition = TRANSITION_MAX
+    if scene == SCENE_GAME { game_reset(a) }
+}
+
+level(a: *App) -> int { return a.lines / 10 }
+
+add_score(a: *App, flushed: int) {
+    base = 0
+    if flushed == 1 { base = 100 }
+    if flushed == 2 { base = 300 }
+    if flushed == 3 { base = 600 }
+    if flushed >= 4 { base = 1000 }
+    a.score = a.score + (level(a) + 1) * base
+}
+
+init_current(a: *App, p: int) {
+    a.cur_piece = p
+    a.px = piece_initial_x(p)
+    a.py = piece_initial_y(p)
+    a.py_carry = 0
+    a.angle = 0
+}
+
+go_next_piece(a: *App) {
+    init_current(a, a.next_piece)
+    a.next_piece = rand_n(a, 7) + 1
+    a.landing = 0
+    if piece_collides(a, a.cur_piece, a.px, a.py, a.angle) == 1 { a.gameover = 1 }
+}
+
+title_update(e: ptr, a: *App) {
+    a.title_count = a.title_count + 1
+    if aebiten.is_key_just_pressed(e, aebiten.KEY_SPACE) == 1 {
+        go_to(a, SCENE_GAME)
+    }
+}
+
+game_update(e: ptr, a: *App) {
+    // flush animation countdown (field.go Update)
+    if a.flush_count > 0 {
+        a.flush_count = a.flush_count - 1
+        if a.flush_count == 0 {
+            flushed = field_end_flush(a)
+            a.lines = a.lines + flushed
+            if flushed > 0 { add_score(a, flushed) }
+            go_next_piece(a)
+        }
+    }
+
+    if a.gameover == 1 {
+        if aebiten.is_key_just_pressed(e, aebiten.KEY_SPACE) == 1 {
+            go_to(a, SCENE_TITLE)
+        }
+        return
+    }
+
+    max_landing = 60
+    if a.cur_piece == 0 { init_current(a, rand_n(a, 7) + 1) }
+    if a.next_piece == 0 { a.next_piece = rand_n(a, 7) + 1 }
+
+    p = a.cur_piece
+    old_angle = a.angle
+
+    if a.flush_count == 0 {
+        rot_r = aebiten.is_key_just_pressed(e, aebiten.KEY_SPACE)
+        if aebiten.is_key_just_pressed(e, aebiten.KEY_X) == 1 { rot_r = 1 }
+        l = aebiten.key_press_duration(e, aebiten.KEY_LEFT)
+        r = aebiten.key_press_duration(e, aebiten.KEY_RIGHT)
+        d = aebiten.key_press_duration(e, aebiten.KEY_DOWN)
+        if rot_r == 1 {
+            if piece_collides(a, p, a.px, a.py, (old_angle + 1) % 4) == 0 {
+                a.angle = (old_angle + 1) % 4
+            }
+        } else {
+        if aebiten.is_key_just_pressed(e, aebiten.KEY_Z) == 1 {
+            if piece_collides(a, p, a.px, a.py, (old_angle + 3) % 4) == 0 {
+                a.angle = (old_angle + 3) % 4
+            }
+        } else {
+        if l == 1 || (l >= 10 && l % 2 == 0) {
+            if piece_collides(a, p, a.px - 1, a.py, a.angle) == 0 { a.px = a.px - 1 }
+        } else {
+        if r == 1 || (r >= 10 && r % 2 == 0) {
+            if piece_collides(a, p, a.px + 1, a.py, a.angle) == 0 { a.px = a.px + 1 }
+        } else {
+        if d > 0 && (d - 1) % 2 == 0 {
+            if piece_collides(a, p, a.px, a.py + 1, a.angle) == 0 {
+                a.py = a.py + 1
+                a.score = a.score + 1
+            }
+        }}}}}
+    }
+
+    // gravity (gamescene.go: carry += 2*level+1 against maxCarry 60)
+    if a.flush_count == 0 {
+        a.py_carry = a.py_carry + 2 * level(a) + 1
+        while a.py_carry >= 60 {
+            a.py_carry = a.py_carry - 60
+            if piece_collides(a, p, a.px, a.py + 1, a.angle) == 0 { a.py = a.py + 1 }
+        }
+    }
+
+    // landing
+    if a.flush_count == 0 && piece_collides(a, p, a.px, a.py + 1, a.angle) == 1 {
+        if aebiten.key_press_duration(e, aebiten.KEY_DOWN) > 0 {
+            a.landing = a.landing + 10
+        } else {
+            a.landing = a.landing + 1
+        }
+        if a.landing >= max_landing {
+            field_absorb(a, p, a.px, a.py, a.angle)
+            if a.flush_count == 0 { go_next_piece(a) }
+        }
+    }
+}
+
+// title background: background.png scrolled diagonally (titlescene.go)
+title_draw(a: *App, screen: ptr) {
+    w = core.image_w(a.bg_img)
+    h = core.image_h(a.bg_img)
+    c = a.title_count
+    count = (SW / w + 1) * (SH / h + 2)
+    i = 0
+    while i < count {
+        dx = 0 - (c / 4) % w
+        dy = (c / 4) % h
+        dst_x = (i % (SW / w + 1)) * w + dx
+        dst_y = (i / (SW / w + 1) - 1) * h + dy
+        o = core.opts_new()
+        core.geom_translate(core.opts_geom(o), dst_x * 1.0, dst_y * 1.0)
+        core.draw_image(screen, a.bg_img, o)
+        core.opts_free(o)
+        i = i + 1
+    }
+    shadow_text(a, screen, "BLOCKS", SW / 2.0, 32.0, 4, 0, 0, 128, text.ALIGN_CENTER)
+    shadow_text(a, screen, "PRESS SPACE TO START", SW / 2.0, (SH - 48) * 1.0, 1,
+        128, 0, 0, text.ALIGN_CENTER)
+}
+
+// game background: tiled background.png under lightGray (substitution — the
+// original cover-scales gophers.jpg; see header)
+game_draw_background(a: *App, screen: ptr) {
+    core.image_fill(screen, 255, 255, 255, 255)
+    w = core.image_w(a.bg_img)
+    h = core.image_h(a.bg_img)
+    y = 0
+    while y < SH {
+        x = 0
+        while x < SW {
+            o = core.opts_new()
+            core.geom_translate(core.opts_geom(o), x * 1.0, y * 1.0)
+            core.opts_set_colorm(o, a.light_gray)
+            core.draw_image(screen, a.bg_img, o)
+            core.opts_free(o)
+            x = x + w
+        }
+        y = y + h
+    }
+}
+
+game_draw(a: *App, screen: ptr) {
+    game_draw_background(a, screen)
+    core.draw_image(screen, a.windows_img, null)
+
+    draw_text_box_content(a, screen, "${a.score}", next_label_x(), score_box_y(), text_box_w())
+    draw_text_box_content(a, screen, "${level(a)}", next_label_x(), level_box_y(), text_box_w())
+    draw_text_box_content(a, screen, "${a.lines}", next_label_x(), lines_box_y(), text_box_w())
+
+    // field blocks (flushing lines get the red-fade ColorM)
+    fcm = flushing_colorm(a.flush_count * 1.0 / (MAX_FLUSH * 1.0))
+    j = 0
+    while j < FIELD_NY {
+        line_cm = null
+        if field_flushable_line(a, j) == 1 { line_cm = fcm }
+        i = 0
+        while i < FIELD_NX {
+            draw_block(a, screen, field_at(a, i, j), i * BLOCK + 20, j * BLOCK + 20, line_cm)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    core.colorm_free(fcm)
+
+    // current piece
+    if a.cur_piece != 0 && a.flush_count == 0 {
+        size = piece_size(a.cur_piece)
+        i = 0
+        while i < size {
+            j = 0
+            while j < size {
+                if piece_blocked(a.cur_piece, i, j, a.angle) == 1 {
+                    draw_block(a, screen, a.cur_piece,
+                        (a.px + i) * BLOCK + 20, (a.py + j) * BLOCK + 20, null)
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+    }
+
+    // next piece, centred in its 5x5 window
+    if a.next_piece != 0 {
+        size = piece_size(a.next_piece)
+        nx = next_label_x() + (5 * BLOCK - size * BLOCK) / 2
+        ny = 20 + BLOCK + (5 * BLOCK - size * BLOCK) / 2
+        i = 0
+        while i < size {
+            j = 0
+            while j < size {
+                if piece_blocked(a.next_piece, i, j, 0) == 1 {
+                    draw_block(a, screen, a.next_piece,
+                        nx + i * BLOCK, ny + j * BLOCK, null)
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+    }
+
+    if a.gameover == 1 { core.draw_image(screen, a.gameover_img, null) }
+}
+
+scene_update(e: ptr, a: *App) {
+    if a.transition == 0 {
+        if a.cur_scene == SCENE_TITLE { title_update(e, a) }
+        if a.cur_scene == SCENE_GAME { game_update(e, a) }
+        return
+    }
+    a.transition = a.transition - 1
+    if a.transition == 0 {
+        a.cur_scene = a.next_scene
+    }
+}
+
+scene_draw_one(a: *App, scene: int, dst: ptr) {
+    if scene == SCENE_TITLE { title_draw(a, dst) }
+    if scene == SCENE_GAME { game_draw(a, dst) }
+}
+
+scene_draw(a: *App, screen: ptr) {
+    if a.transition == 0 {
+        scene_draw_one(a, a.cur_scene, screen)
+        return
+    }
+    // 20-frame cross-fade (scenemanager.go)
+    core.image_clear(a.trans_from)
+    scene_draw_one(a, a.cur_scene, a.trans_from)
+    core.image_clear(a.trans_to)
+    scene_draw_one(a, a.next_scene, a.trans_to)
+    core.draw_image(screen, a.trans_from, null)
+    o = core.opts_new()
+    alpha = 1.0 - a.transition * 1.0 / (TRANSITION_MAX * 1.0)
+    core.opts_color_scale_alpha(o, alpha)
+    core.draw_image(screen, a.trans_to, o)
+    core.opts_free(o)
+}
+
+main() {
+    a = calloc(1, 256) as *App
+    a.blocks_img = png.png_load("examples/resources/images/blocks/blocks.png")
+    a.bg_img = png.png_load("examples/resources/images/blocks/background.png")
+    if a.blocks_img == null || a.bg_img == null {
+        println("blocks: cannot load sprites (run from the repo root)")
+        exit(1)
+    }
+    a.face1 = text.face_new("examples/resources/fonts/pressstart2p.ttf", 8.0)
+    a.face4 = text.face_new("examples/resources/fonts/pressstart2p.ttf", 32.0)
+    if text.face_ok(a.face1) != 1 {
+        println("blocks: cannot load pressstart2p.ttf")
+        exit(1)
+    }
+    a.field = calloc(FIELD_NX * FIELD_NY, 1)
+    a.seed = 20260828
+    a.trans_from = core.image_new(SW, SH)
+    a.trans_to = core.image_new(SW, SH)
+    build_light_gray(a)
+    build_windows(a)
+    build_gameover(a)
+    a.cur_scene = SCENE_TITLE
+
+    aebiten.game("Blocks (Ebitengine Demo)", SW, SH) {
+        window_scale(2.0)
+        update() callback |e: ptr| { scene_update(e, a) }
+        draw() callback |e: ptr, screen: ptr| { scene_draw(a, screen) }
+    }
+}

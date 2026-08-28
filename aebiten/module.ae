@@ -34,6 +34,7 @@ exports (
     game, engine_shell, window_scale, update, draw, title_margin_w, title_margin_h,
     debug_print, debug_print_at, actual_fps,
     is_key_pressed, is_key_just_pressed, is_key_just_released,
+    key_press_duration,
     cursor_x, cursor_y,
     is_mouse_button_pressed, is_mouse_button_just_pressed,
     is_mouse_button_just_released,
@@ -218,6 +219,7 @@ struct Engine {
     keys_now: ptr
     keys_tick: ptr
     keys_prev: ptr
+    keys_dur: ptr
     mouse_x: float
     mouse_y: float
     mouse_now: int
@@ -250,6 +252,7 @@ game_new(logical_w: int, logical_h: int) -> ptr {
     e.keys_now = calloc(KEY_MAX, 1)
     e.keys_tick = calloc(KEY_MAX, 1)
     e.keys_prev = calloc(KEY_MAX, 1)
+    e.keys_dur = calloc(KEY_MAX, 4)
     e.scale = 1.0
     return e as ptr
 }
@@ -312,6 +315,11 @@ begin_tick(e: *Engine) {
     while i < KEY_MAX {
         mem.set_byte(e.keys_prev, i, mem.get_byte(e.keys_tick, i))
         mem.set_byte(e.keys_tick, i, mem.get_byte(e.keys_now, i))
+        if mem.get_byte(e.keys_tick, i) == 1 {
+            mem.set_int(e.keys_dur, i * 4, mem.get_int(e.keys_dur, i * 4) + 1)
+        } else {
+            mem.set_int(e.keys_dur, i * 4, 0)
+        }
         i = i + 1
     }
     e.mouse_prev = e.mouse_tick
@@ -337,6 +345,13 @@ is_key_just_pressed(ep: ptr, code: int) -> int {
         return 1
     }
     return 0
+}
+
+// Ticks the key has been held (0 = up) — inpututil.KeyPressDuration.
+key_press_duration(ep: ptr, code: int) -> int {
+    e = ep as *Engine
+    if code < 0 || code >= KEY_MAX { return 0 }
+    return mem.get_int(e.keys_dur, code * 4)
 }
 
 is_key_just_released(ep: ptr, code: int) -> int {
@@ -490,6 +505,7 @@ engine_shell() -> ptr {
     e.keys_now = calloc(KEY_MAX, 1)
     e.keys_tick = calloc(KEY_MAX, 1)
     e.keys_prev = calloc(KEY_MAX, 1)
+    e.keys_dur = calloc(KEY_MAX, 4)
     e.scale = 1.0
     return e as ptr
 }

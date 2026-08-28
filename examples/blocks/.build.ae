@@ -1,0 +1,20 @@
+// blocks — Ebiten example port, as its own cached aeb node.
+import bldr
+import aether
+import aether (source, output, no_closure_regen, lib)
+import build_support.aebitenui (aebiten_backend)
+
+main() {
+    bldr.build() {
+        root = _get("root")
+        aether.program() {
+            source("blocks.ae")
+            output("blocks")
+            lib("${root}/../aether-ui")
+            lib("${root}")
+            no_closure_regen()
+            aebiten_backend(root)
+        }
+        return 0
+    }
+}

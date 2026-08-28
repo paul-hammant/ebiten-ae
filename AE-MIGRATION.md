@@ -63,7 +63,7 @@ Build: `aeb examples/<name>` from the repo root →
 | ColorM 4×5 (`colorm` pkg) | `colorm/`, `internal/affine` | `aebiten/core.ae` `colorm_*` | ✅ + tests (scale/translate/concat/hue/HSV; blitter-integrated) |
 | Game loop / RunGame | `run.go`, `gameforui.go`, `internal/clock` | `aebiten/module.ae` | ✅ fixed 60 TPS accumulator + per-frame draw + FPS counter + window scale (`set_scale`) |
 | Keys + input state | `keys.go`, `input.go`, `internal/inputstate` | `aebiten/module.ae` | ✅ (key-release added to aether-ui upstream; ~75 keys mapped) |
-| inpututil (just pressed/released) | `inpututil/` | `aebiten/module.ae` | ✅ keys + left mouse; wheel per tick |
+| inpututil (just pressed/released) | `inpututil/` | `aebiten/module.ae` | ✅ keys + left mouse; wheel per tick; `key_press_duration` (held-tick counts, for DAS auto-repeat) |
 | ebitenutil DebugPrint | `ebitenutil/`, `text.png` | `aebiten/util.ae` | ✅ font sheet embedded (hex) + scaled/aligned variant |
 | vector | `vector/` | `aebiten/vector.ae` | ✅ + tests (fill/stroke rect+circle+line, Path with quad/cubic/arc, nonzero+even-odd scanline fill; no AA yet) |
 | PNG decode (assets) | `internal/png` | `aebiten/png.ae` | ✅ + tests (8-bit gray/RGB/palette/GA/RGBA, all filters; no interlace/16-bit) |
@@ -86,6 +86,7 @@ Build: `aeb examples/<name>` from the repo root →
 | `examples/polygons` | ✅ (DrawTriangles rainbow n-gon; Up/Down replaces the debugui slider) |
 | `examples/doomfire` | ✅ (classic PSX fire, 100x50 at 6x scale) |
 | `examples/2048` | ✅ full game (palette, slide+pop animations, scoring; bitmap font for TTF, no touch) |
+| `examples/blocks` | ✅ upstream's flagship game example — full Tetris: scene manager with cross-fade transitions, DAS auto-repeat, soft-drop scoring, line-flush ColorM animation, level speed curve, sprite-sheet blocks, PressStart2P shadowed text (no gamepad scenes; tiled bg in place of the JPEG cover-scale) |
 
 CI: `./ci.sh` — headless unit tests, full example build (`aeb all.ae`),
 snake driver smoke under xvfb.
