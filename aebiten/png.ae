@@ -164,7 +164,9 @@ png_decode(data: ptr, data_len: int) -> ptr {
     }
 
     // Inflate. bytes.finish consumes the buffer into a binary-safe string.
-    // (Direct writes through bytes.data() must be published via set_length.)
+    // (set_length is belt-and-braces since aether 0.633 — finish() now
+    // clamps to capacity, so a direct data() write no longer needs it —
+    // but stating the live length explicitly documents the intent.)
     bytes.set_length(idat_b, idat_total)
     idat_s = bytes.finish(idat_b, idat_total)
     ok = zlib.zlib_try_inflate(idat_s, idat_total)
